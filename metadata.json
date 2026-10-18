@@ -1,0 +1,6 @@
+{
+  "name": "شركة المدار - نظام إدارة الصيانة والمالية | Al-Madar IT",
+  "description": "نظام متكامل لإدارة عقود وزيارات الصيانة، المالية، جدول المواعيد الأسبوعي، وبوابة طلبات الزبائن لشركة المدار لتجارة تكنولوجيا المعلومات (PWA).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

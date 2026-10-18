@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#F1F5F9" />
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0B3B68" />
+      <stop offset="55%" stop-color="#155E95" />
+      <stop offset="100%" stop-color="#2980B9" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#B45309" />
+      <stop offset="50%" stop-color="#E58E26" />
+      <stop offset="100%" stop-color="#F6B93B" />
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#145A32" />
+      <stop offset="50%" stop-color="#1E824C" />
+      <stop offset="100%" stop-color="#2ECC71" />
+    </linearGradient>
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0B3B68" flood-opacity="0.16" />
+    </filter>
+  </defs>
+
+  <!-- App Icon Rounded Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bgGrad)" />
+  <rect x="8" y="8" width="496" height="496" rx="88" fill="none" stroke="#E2E8F0" stroke-width="4" />
+
+  <!-- Outer Dotted Tech Orbit -->
+  <ellipse cx="242" cy="196" rx="145" ry="96" transform="rotate(-32 242 196)" fill="none" stroke="#0B3B68" stroke-width="3.5" stroke-dasharray="6 6" opacity="0.55" />
+
+  <!-- Interlocking 3D Binary Rings -->
+  <g filter="url(#softShadow)">
+    <!-- Blue Orbital Ring -->
+    <ellipse cx="245" cy="192" rx="112" ry="68" transform="rotate(-58 245 192)" fill="none" stroke="url(#blueGrad)" stroke-width="22" />
+    <!-- Gold Orbital Ring -->
+    <ellipse cx="236" cy="190" rx="108" ry="64" transform="rotate(34 236 190)" fill="none" stroke="url(#goldGrad)" stroke-width="20" />
+    <!-- Green Orbital Ring -->
+    <ellipse cx="248" cy="204" rx="118" ry="56" transform="rotate(-14 248 204)" fill="none" stroke="url(#greenGrad)" stroke-width="18" />
+
+    <!-- Central Circuit Lightbulb -->
+    <circle cx="242" cy="192" r="44" fill="#FFFFFF" stroke="url(#greenGrad)" stroke-width="5" />
+    <path d="M226 186 C226 174 233 166 242 166 C251 166 258 174 258 186 C258 193 253 198 250 204 L234 204 C231 198 226 193 226 186 Z" fill="none" stroke="url(#greenGrad)" stroke-width="4" />
+    <!-- Circuit Traces inside Bulb -->
+    <line x1="236" y1="204" x2="236" y2="184" stroke="#1E824C" stroke-width="3" stroke-linecap="round" />
+    <circle cx="236" cy="181" r="3.5" fill="#E58E26" />
+    <line x1="242" y1="204" x2="242" y2="177" stroke="#0B3B68" stroke-width="3" stroke-linecap="round" />
+    <circle cx="242" cy="174" r="3.5" fill="#0B3B68" />
+    <line x1="248" y1="204" x2="248" y2="186" stroke="#1E824C" stroke-width="3" stroke-linecap="round" />
+    <circle cx="248" cy="183" r="3.5" fill="#2ECC71" />
+    <!-- Bulb Base -->
+    <line x1="234" y1="211" x2="250" y2="211" stroke="#0B3B68" stroke-width="4" stroke-linecap="round" />
+    <line x1="237" y1="217" x2="247" y2="217" stroke="#E58E26" stroke-width="4" stroke-linecap="round" />
+
+    <!-- Three Rising Dynamic Arrows (Blue, Gold, Green) -->
+    <!-- Blue Rising Arrow -->
+    <path d="M175 245 Q245 190 326 98" fill="none" stroke="url(#blueGrad)" stroke-width="14" stroke-linecap="round" />
+    <polygon points="342,80 308,95 333,116" fill="url(#blueGrad)" />
+
+    <!-- Gold Rising Arrow -->
+    <path d="M150 278 Q258 214 368 88" fill="none" stroke="url(#goldGrad)" stroke-width="16" stroke-linecap="round" />
+    <polygon points="388,66 348,84 376,109" fill="url(#goldGrad)" />
+
+    <!-- Green Rising Arrow -->
+    <path d="M135 302 Q265 248 374 134" fill="none" stroke="url(#greenGrad)" stroke-width="14" stroke-linecap="round" />
+    <polygon points="392,115 356,130 380,152" fill="url(#greenGrad)" />
+  </g>
+
+  <!-- Binary Accents on Rings -->
+  <text x="195" y="128" fill="#FFFFFF" font-family="monospace" font-size="10" font-weight="bold" transform="rotate(-38 195 128)">1010110</text>
+  <text x="165" y="198" fill="#FFFFFF" font-family="monospace" font-size="10" font-weight="bold" transform="rotate(34 165 198)">1011010</text>
+  <text x="248" y="268" fill="#FFFFFF" font-family="monospace" font-size="10" font-weight="bold" transform="rotate(-15 248 268)">0110101</text>
+
+  <!-- Brand Typography -->
+  <text x="256" y="366" text-anchor="middle" fill="#0B3B68" font-family="system-ui, -apple-system, 'Segoe UI', Cairo, sans-serif" font-size="52" font-weight="900">شركة المدار</text>
+  <text x="256" y="402" text-anchor="middle" fill="#0F3E66" font-family="system-ui, -apple-system, 'Segoe UI', Cairo, sans-serif" font-size="23" font-weight="700">لتجارة تكنولوجيا المعلومات</text>
+  <text x="256" y="452" text-anchor="middle" fill="#135D94" font-family="system-ui, -apple-system, sans-serif" font-size="44" font-weight="900" letter-spacing="3">AL-MADAR</text>
+  <text x="256" y="478" text-anchor="middle" fill="#0B3B68" font-family="system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700" letter-spacing="1.2">FOR INFORMATION TECHNOLOGY TRADING</text>
+</svg>
