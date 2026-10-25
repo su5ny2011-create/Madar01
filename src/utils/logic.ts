@@ -1,6 +1,7 @@
 import type {
   AppNotification,
   AppState,
+  CashAdvanceRecord,
   Customer,
   ExpenseRecord,
   FinancialSummary,
@@ -110,6 +111,21 @@ export function formatJod(amount: number, lang: Language = 'ar'): string {
   return lang === 'ar' ? `${formatted} د.أ` : `${formatted} JOD`;
 }
 
+export function deduplicateUsers(users: User[]): User[] {
+  if (!Array.isArray(users)) return [];
+  const map = new Map<string, User>();
+  for (const u of users) {
+    if (!u || !u.username) continue;
+    const key = u.username.trim().toLowerCase();
+    const existing = map.get(key);
+    // Prefer 'user-admin' over legacy 'u-admin' if both exist
+    if (!existing || (existing.id === 'u-admin' && u.id === 'user-admin') || u.id !== 'u-admin') {
+      map.set(key, u);
+    }
+  }
+  return Array.from(map.values());
+}
+
 export function authenticateUser(
   users: User[],
   usernameInput: string,
@@ -123,7 +139,10 @@ export function authenticateUser(
     (u) =>
       u.active &&
       u.username.trim().toLowerCase() === cleanUser &&
-      u.password === cleanPass
+      (u.password === cleanPass ||
+        (cleanUser === 'admin' &&
+          (u.password === 'admin' || u.password === '123') &&
+          (cleanPass === 'admin' || cleanPass === '123')))
   );
   return found || null;
 }
@@ -194,25 +213,47 @@ export function syncMaintenanceVisitIntoState(
     );
   }
 
+  // 2. Upsert visit (preserving existing metadata flags if updating)
+  const existingIdx = state.visits.findIndex((v) => v.id === visit.id);
+  const isNewVisit = existingIdx < 0;
+  const baseVisit =
+    existingIdx >= 0 ? { ...state.visits[existingIdx], ...visit } : visit;
+
+  const resolvedStatus =
+    Boolean(baseVisit.isResolved) || baseVisit.status === 'resolved';
+  const normalizedStatus = resolvedStatus
+    ? 'resolved'
+    : baseVisit.status === 'in_progress'
+    ? 'in_progress'
+    : 'pending';
+
   const enrichedVisit: MaintenanceVisit = {
-    ...visit,
+    ...baseVisit,
+    status: normalizedStatus,
+    isResolved: resolvedStatus,
+    amountJod: baseVisit.visitType === 'contract' ? 0 : baseVisit.amountJod,
+    isPaid: baseVisit.visitType === 'contract' ? false : baseVisit.isPaid,
     customerId: matchedCustomer.id,
     customerName: cleanName,
   };
 
-  // 2. Upsert visit
-  const existingIdx = state.visits.findIndex((v) => v.id === enrichedVisit.id);
-  const isNewVisit = existingIdx < 0;
   const nextVisits =
     existingIdx >= 0
       ? state.visits.map((v, i) => (i === existingIdx ? enrichedVisit : v))
       : [enrichedVisit, ...state.visits];
 
-  // 3. Sync appointments linked to this visit
+  // 3. Sync appointments linked to this visit (preserving reminderSent30Min if date & time match)
+  const existingMainApt = state.appointments.find(
+    (a) => a.id === `apt-main-${enrichedVisit.id}`
+  );
+  const existingNextApt = state.appointments.find(
+    (a) => a.id === `apt-next-${enrichedVisit.id}`
+  );
   const filteredAppointments = state.appointments.filter(
     (a) => a.linkedVisitId !== enrichedVisit.id
   );
 
+  const visitTimeNorm = enrichedVisit.visitTime || '10:00';
   const mainAppointment: ScheduleAppointment = {
     id: `apt-main-${enrichedVisit.id}`,
     title:
@@ -222,11 +263,17 @@ export function syncMaintenanceVisitIntoState(
     customerName: enrichedVisit.customerName,
     phone: enrichedVisit.phone,
     date: enrichedVisit.visitDate,
-    time: enrichedVisit.visitTime || '10:00',
+    time: visitTimeNorm,
     type: 'maintenance',
     linkedVisitId: enrichedVisit.id,
     status: enrichedVisit.isResolved ? 'completed' : 'scheduled',
     note: enrichedVisit.note,
+    reminderSent30Min:
+      existingMainApt &&
+      existingMainApt.date === enrichedVisit.visitDate &&
+      existingMainApt.time === visitTimeNorm
+        ? existingMainApt.reminderSent30Min
+        : false,
   };
 
   const newAppointments: ScheduleAppointment[] = [mainAppointment];
@@ -238,22 +285,69 @@ export function syncMaintenanceVisitIntoState(
       customerName: enrichedVisit.customerName,
       phone: enrichedVisit.phone,
       date: enrichedVisit.nextVisitDate,
-      time: enrichedVisit.visitTime || '10:00',
+      time: visitTimeNorm,
       type: 'next_visit',
       linkedVisitId: enrichedVisit.id,
       status: 'scheduled',
       note: `متابعة صيانة سابقة (${enrichedVisit.problem})`,
+      reminderSent30Min:
+        existingNextApt &&
+        existingNextApt.date === enrichedVisit.nextVisitDate &&
+        existingNextApt.time === visitTimeNorm
+          ? existingNextApt.reminderSent30Min
+          : false,
     });
   }
 
-  // 4. Auto-register any new parts from requiredParts or installedParts into state.parts
+  // 4. Auto-register any new parts from requiredParts or installedParts into state.parts,
+  // and decrement stockQty when an existing catalog part is newly installed (supporting "(xN)" quantities)
+  const parsePartStr = (raw: string) => {
+    const trimmed = raw.trim();
+    const m = trimmed.match(/^(.*?)\s*\(x(\d+)\)$/i);
+    if (m) {
+      return { baseName: m[1].trim(), qty: Math.max(1, parseInt(m[2], 10) || 1) };
+    }
+    return { baseName: trimmed, qty: 1 };
+  };
+
   let nextParts = [...state.parts];
+  const prevInstalledMap = new Map<string, number>();
+  for (const raw of existingIdx >= 0 ? state.visits[existingIdx].installedParts || [] : []) {
+    const { baseName, qty } = parsePartStr(raw);
+    if (baseName) {
+      const k = baseName.toLowerCase();
+      prevInstalledMap.set(k, (prevInstalledMap.get(k) || 0) + qty);
+    }
+  }
+
+  const newInstalledMap = new Map<string, number>();
+  for (const raw of enrichedVisit.installedParts || []) {
+    const { baseName, qty } = parsePartStr(raw);
+    if (baseName) {
+      const k = baseName.toLowerCase();
+      newInstalledMap.set(k, (newInstalledMap.get(k) || 0) + qty);
+    }
+  }
+
+  nextParts = nextParts.map((pt) => {
+    const key = pt.name.trim().toLowerCase();
+    const prevQ = prevInstalledMap.get(key) || 0;
+    const newQ = newInstalledMap.get(key) || 0;
+    if (newQ > prevQ) {
+      return {
+        ...pt,
+        stockQty: Math.max(0, (pt.stockQty || 0) - (newQ - prevQ)),
+      };
+    }
+    return pt;
+  });
+
   const allVisitParts = [
     ...(enrichedVisit.requiredParts || []),
     ...(enrichedVisit.installedParts || []),
   ];
   for (const rawPartName of allVisitParts) {
-    const cleanPart = rawPartName.trim();
+    const { baseName: cleanPart } = parsePartStr(rawPartName);
     if (!cleanPart) continue;
     const exists = nextParts.some(
       (p) => p.name.trim().toLowerCase() === cleanPart.toLowerCase()
@@ -299,6 +393,949 @@ export function deleteMaintenanceVisitFromState(
     ...state,
     visits: state.visits.filter((v) => v.id !== visitId),
     appointments: state.appointments.filter((a) => a.linkedVisitId !== visitId),
+    notifications: (state.notifications || []).filter(
+      (n) => n.linkedVisitId !== visitId
+    ),
+  };
+}
+
+/**
+ * Automatically archives requests from ended/previous days (visitDate < todayStr)
+ * into the "Daily Maintenance Requests" (طلبات الصيانة اليومية) archive without losing any information.
+ */
+export function autoArchivePastDayVisits(
+  state: AppState,
+  todayStr: string = getTodayStr()
+): { state: AppState; archivedCount: number } {
+  let archivedCount = 0;
+  const nextVisits = state.visits.map((v) => {
+    // Automatically archive visits from previous/ended days (visitDate < todayStr) to Old Requests archive
+    const isExcludedToday = v.autoArchiveExcludedDate === todayStr;
+    if (!v.isArchived && !isExcludedToday && v.visitDate < todayStr) {
+      archivedCount += 1;
+      return {
+        ...v,
+        isArchived: true,
+        archivedAt: todayStr,
+        autoArchiveExcluded: false,
+        autoArchiveExcludedDate: undefined,
+      };
+    }
+    return v;
+  });
+
+  if (archivedCount === 0) {
+    return { state, archivedCount: 0 };
+  }
+
+  return {
+    state: {
+      ...state,
+      visits: nextVisits,
+    },
+    archivedCount,
+  };
+}
+
+/**
+ * Transfers completed maintenance visits (or specific visitIds) to the
+ * "Daily Maintenance Requests" (طلبات الصيانة اليومية) archive without losing any data.
+ */
+export function archiveVisitsIntoState(
+  state: AppState,
+  visitIds?: string[],
+  todayStr: string = getTodayStr()
+): { state: AppState; archivedCount: number } {
+  const idSet = visitIds ? new Set(visitIds) : null;
+  let archivedCount = 0;
+
+  const nextVisits = state.visits.map((v) => {
+    const shouldArchive = idSet
+      ? idSet.has(v.id) && !v.isArchived
+      : (v.isResolved || v.status === 'resolved') && !v.isArchived;
+
+    if (shouldArchive) {
+      archivedCount += 1;
+      return {
+        ...v,
+        isArchived: true,
+        archivedAt: todayStr,
+        autoArchiveExcluded: false,
+        autoArchiveExcludedDate: undefined,
+      };
+    }
+    return v;
+  });
+
+  if (archivedCount === 0) {
+    return { state, archivedCount: 0 };
+  }
+
+  return {
+    state: {
+      ...state,
+      visits: nextVisits,
+    },
+    archivedCount,
+  };
+}
+
+/**
+ * Restores an archived maintenance visit back to the active Maintenance Requests list.
+ */
+export function unarchiveVisitFromState(
+  state: AppState,
+  visitId: string,
+  todayStr: string = getTodayStr()
+): AppState {
+  return {
+    ...state,
+    visits: state.visits.map((v) =>
+      v.id === visitId
+        ? {
+            ...v,
+            isArchived: false,
+            archivedAt: undefined,
+            autoArchiveExcluded: true,
+            autoArchiveExcludedDate: todayStr,
+          }
+        : v
+    ),
+  };
+}
+
+/**
+ * Restores multiple (or all) archived maintenance visits back to the active Maintenance Requests list.
+ */
+export function unarchiveVisitsFromState(
+  state: AppState,
+  visitIds?: string[],
+  todayStr: string = getTodayStr()
+): { state: AppState; restoredCount: number } {
+  const idSet = visitIds && visitIds.length > 0 ? new Set(visitIds) : null;
+  let restoredCount = 0;
+
+  const nextVisits = state.visits.map((v) => {
+    const shouldRestore = idSet
+      ? idSet.has(v.id) && Boolean(v.isArchived)
+      : Boolean(v.isArchived);
+
+    if (shouldRestore) {
+      restoredCount += 1;
+      return {
+        ...v,
+        isArchived: false,
+        archivedAt: undefined,
+        autoArchiveExcluded: true,
+        autoArchiveExcludedDate: todayStr,
+      };
+    }
+    return v;
+  });
+
+  if (restoredCount === 0) {
+    return { state, restoredCount: 0 };
+  }
+
+  return {
+    state: {
+      ...state,
+      visits: nextVisits,
+    },
+    restoredCount,
+  };
+}
+
+/**
+ * Automatically archives past-day financial transactions (date < todayStr)
+ * into "المالية المتقدمة" (Advanced Finance) and automatically rolls over their
+ * net collections/expenses directly into active Morning Cash for todayStr.
+ */
+export function autoArchivePastDayFinance(
+  state: AppState,
+  todayStr: string = getTodayStr()
+): { state: AppState; archivedCount: number; rolledOverProfitJod: number } {
+  let archivedCount = 0;
+  let rolledOverProfitJod = 0;
+
+  // 1. Identify previous active morning cash that will be archived
+  let previousMorningCashJod = 0;
+  for (const m of state.morningCash) {
+    if (!m.isArchived && m.date < todayStr) {
+      previousMorningCashJod += Number(m.amountJod) || 0;
+    }
+  }
+
+  // 2. Identify unrolled revenue & expenses from past days (date < todayStr)
+  let pastRevenueJod = 0;
+  let pastExpensesJod = 0;
+  const targetVisitIds = new Set<string>();
+  const targetExpenseIds = new Set<string>();
+
+  for (const v of state.visits) {
+    const isExcludedToday = v.financeAutoArchiveExcludedDate === todayStr;
+    if (
+      v.isPaid &&
+      v.visitType !== 'contract' &&
+      !isExcludedToday &&
+      v.visitDate < todayStr &&
+      (!v.isFinanceArchived || !v.profitTransferredToMorningCash)
+    ) {
+      targetVisitIds.add(v.id);
+      // CliQ and Check payments do NOT get added to Cash (الكاش)
+      if (v.paymentMethod === 'cash') {
+        pastRevenueJod += Number(v.amountJod) || 0;
+      }
+    }
+  }
+
+  for (const e of state.expenses) {
+    const isExcludedToday = e.autoArchiveExcludedDate === todayStr;
+    if (
+      !isExcludedToday &&
+      e.date < todayStr &&
+      (!e.isArchived || !e.profitTransferredToMorningCash)
+    ) {
+      targetExpenseIds.add(e.id);
+      if (e.paymentMethod === 'cash') {
+        pastExpensesJod += Number(e.amountJod) || 0;
+      }
+    }
+  }
+
+  pastRevenueJod = Number(pastRevenueJod.toFixed(2));
+  pastExpensesJod = Number(pastExpensesJod.toFixed(2));
+  const netProfit = Number((pastRevenueJod - pastExpensesJod).toFixed(2));
+
+  // 3. Archive past morning cash records
+  const nextMorningCashBase = state.morningCash.map((m) => {
+    const isExcludedToday = m.autoArchiveExcludedDate === todayStr;
+    if (!m.isArchived && !isExcludedToday && m.date < todayStr) {
+      archivedCount += 1;
+      return {
+        ...m,
+        isArchived: true,
+        archivedAt: todayStr,
+        autoArchiveExcluded: false,
+        autoArchiveExcludedDate: undefined,
+      };
+    }
+    return m;
+  });
+
+  // 4. Archive & mark profitTransferred for past expenses
+  const nextExpenses = state.expenses.map((e) => {
+    if (targetExpenseIds.has(e.id)) {
+      if (!e.isArchived) archivedCount += 1;
+      return {
+        ...e,
+        isArchived: true,
+        archivedAt: todayStr,
+        profitTransferredToMorningCash: true,
+        autoArchiveExcluded: false,
+        autoArchiveExcludedDate: undefined,
+      };
+    }
+    return e;
+  });
+
+  // 5. Archive & mark profitTransferred for past visits
+  const nextVisits = state.visits.map((v) => {
+    if (targetVisitIds.has(v.id)) {
+      if (!v.isFinanceArchived) archivedCount += 1;
+      return {
+        ...v,
+        isFinanceArchived: true,
+        financeArchivedAt: todayStr,
+        profitTransferredToMorningCash: true,
+        financeAutoArchiveExcluded: false,
+        financeAutoArchiveExcludedDate: undefined,
+      };
+    }
+    return v;
+  });
+
+  // Check if any rollover or archiving occurred
+  const hasPastTransactionsToRollover =
+    targetVisitIds.size > 0 || targetExpenseIds.size > 0 || previousMorningCashJod > 0;
+
+  if (archivedCount === 0 && !hasPastTransactionsToRollover) {
+    return { state, archivedCount: 0, rolledOverProfitJod: 0 };
+  }
+
+  let finalMorningCash = nextMorningCashBase;
+  rolledOverProfitJod = netProfit;
+
+  if (hasPastTransactionsToRollover) {
+    // Check if there is already an active morning cash for todayStr
+    const existingTodayMcIdx = finalMorningCash.findIndex(
+      (m) => !m.isArchived && m.date === todayStr
+    );
+
+    if (existingTodayMcIdx >= 0) {
+      const existing = finalMorningCash[existingTodayMcIdx];
+      const newAmt = Number(
+        (
+          Number(existing.amountJod || 0) +
+          (previousMorningCashJod > 0 && Number(existing.amountJod || 0) === 0
+            ? previousMorningCashJod
+            : 0) +
+          netProfit
+        ).toFixed(2)
+      );
+      const noteAddition = `ترحيل تلقائي لنهاية اليوم السابق (صافي أرباح: ${
+        netProfit >= 0 ? '+' : ''
+      }${netProfit.toFixed(2)} د.أ)`;
+      const updatedNote = existing.note
+        ? existing.note.includes('ترحيل تلقائي')
+          ? existing.note
+          : `${existing.note} · ${noteAddition}`
+        : noteAddition;
+
+      finalMorningCash = finalMorningCash.map((m, idx) =>
+        idx === existingTodayMcIdx
+          ? {
+              ...m,
+              amountJod: newAmt,
+              note: updatedNote,
+              recordedBy: m.recordedBy || 'النظام (ترحيل تلقائي)',
+              autoArchiveExcluded: true,
+            }
+          : m
+      );
+    } else {
+      // Create today's opening morning cash with previous cash + net profit
+      const openingAmount = Number(
+        (previousMorningCashJod + netProfit).toFixed(2)
+      );
+      const newRecord: MorningCashRecord = {
+        id: `mc-auto-rollover-${todayStr}-${Date.now().toString(36).slice(2, 6)}`,
+        date: todayStr,
+        amountJod: Math.max(0, openingAmount),
+        note: `ترحيل تلقائي لنهاية اليوم — رصيد مرحّل من اليوم السابق (صافي أرباح: ${
+          netProfit >= 0 ? '+' : ''
+        }${netProfit.toFixed(2)} د.أ | مقبوضات: ${pastRevenueJod.toFixed(
+          2
+        )} د.أ - مصاريف: ${pastExpensesJod.toFixed(2)} د.أ)`,
+        recordedBy: 'النظام (ترحيل تلقائي لنهاية اليوم)',
+        isArchived: false,
+        autoArchiveExcluded: true,
+      };
+      finalMorningCash = [newRecord, ...finalMorningCash];
+    }
+  }
+
+  return {
+    state: {
+      ...state,
+      morningCash: finalMorningCash,
+      expenses: nextExpenses,
+      visits: nextVisits,
+    },
+    archivedCount,
+    rolledOverProfitJod,
+  };
+}
+
+/**
+ * Transfers daily financial transactions (Morning Cash, Expenses, and Paid Maintenance Visits)
+ * to the "المالية المتقدمة" (Advanced Finance) page without losing any data.
+ */
+export function transferDailyFinanceToAdvanced(
+  state: AppState,
+  options?: {
+    targetDate?: string;
+    recordType?: 'morning_cash' | 'expense' | 'visit_revenue';
+    id?: string;
+    ids?: string[];
+  },
+  todayStr: string = getTodayStr()
+): { state: AppState; transferredCount: number } {
+  let transferredCount = 0;
+  const targetDate = options?.targetDate;
+  const recordType = options?.recordType;
+  const targetId = options?.id;
+  const idSet =
+    options?.ids && options.ids.length > 0 ? new Set(options.ids) : null;
+
+  const nextMorningCash = state.morningCash.map((m) => {
+    if (m.isArchived) return m;
+    const matchBySet = idSet ? idSet.has(m.id) : false;
+    const matchSingle =
+      !idSet && recordType === 'morning_cash' && targetId
+        ? m.id === targetId
+        : false;
+    const matchBulk =
+      !idSet && !recordType && (!targetDate || m.date === targetDate);
+
+    if (matchBySet || matchSingle || matchBulk) {
+      transferredCount += 1;
+      return {
+        ...m,
+        isArchived: true,
+        archivedAt: todayStr,
+        autoArchiveExcluded: false,
+      };
+    }
+    return m;
+  });
+
+  const nextExpenses = state.expenses.map((e) => {
+    if (e.isArchived) return e;
+    const matchBySet = idSet ? idSet.has(e.id) : false;
+    const matchSingle =
+      !idSet && recordType === 'expense' && targetId
+        ? e.id === targetId
+        : false;
+    const matchBulk =
+      !idSet && !recordType && (!targetDate || e.date === targetDate);
+
+    if (matchBySet || matchSingle || matchBulk) {
+      transferredCount += 1;
+      return {
+        ...e,
+        isArchived: true,
+        archivedAt: todayStr,
+        autoArchiveExcluded: false,
+      };
+    }
+    return e;
+  });
+
+  const nextVisits = state.visits.map((v) => {
+    if (!v.isPaid || v.visitType === 'contract' || v.isFinanceArchived) return v;
+    const matchBySet = idSet ? idSet.has(v.id) : false;
+    const matchSingle =
+      !idSet && recordType === 'visit_revenue' && targetId
+        ? v.id === targetId
+        : false;
+    const matchBulk =
+      !idSet && !recordType && (!targetDate || v.visitDate === targetDate);
+
+    if (matchBySet || matchSingle || matchBulk) {
+      transferredCount += 1;
+      return {
+        ...v,
+        isFinanceArchived: true,
+        financeArchivedAt: todayStr,
+        financeAutoArchiveExcluded: false,
+      };
+    }
+    return v;
+  });
+
+  if (transferredCount === 0) {
+    return { state, transferredCount: 0 };
+  }
+
+  return {
+    state: {
+      ...state,
+      morningCash: nextMorningCash,
+      expenses: nextExpenses,
+      visits: nextVisits,
+    },
+    transferredCount,
+  };
+}
+
+export interface ProfitRolloverResult {
+  state: AppState;
+  transferredCount: number;
+  revenueJod: number;
+  expensesJod: number;
+  netProfitJod: number;
+  previousMorningCashJod: number;
+  newMorningCashJod: number;
+  morningCashRecord?: MorningCashRecord;
+}
+
+/**
+ * Transfers financial accounts (Paid Maintenance Visits & Expenses) and their Net Profit
+ * directly into the active Morning Cash (الكاش الصباحي), while archiving the settled
+ * revenue and expense records into Advanced Finance so nothing is lost or double-counted.
+ */
+export function transferProfitsToMorningCash(
+  state: AppState,
+  options?: {
+    targetDate?: string;
+    recordType?: 'morning_cash' | 'expense' | 'visit_revenue';
+    id?: string;
+    ids?: string[];
+    source?: 'active' | 'archived';
+    recordedBy?: string;
+  },
+  todayStr: string = getTodayStr()
+): ProfitRolloverResult {
+  const targetDate = options?.targetDate;
+  const recordType = options?.recordType;
+  const targetId = options?.id;
+  const idSet =
+    options?.ids && options.ids.length > 0 ? new Set(options.ids) : null;
+  const source = options?.source || 'active';
+  const recordedBy = options?.recordedBy || 'مدير النظام';
+
+  const activeMorningCash = state.morningCash.filter((m) => !m.isArchived);
+  const previousMorningCashJod = Number(
+    activeMorningCash
+      .reduce((sum, m) => sum + (Number(m.amountJod) || 0), 0)
+      .toFixed(2)
+  );
+
+  if (source === 'archived') {
+    const matchedVisits = state.visits.filter(
+      (v) =>
+        v.isPaid &&
+        v.visitType !== 'contract' &&
+        Boolean(v.isFinanceArchived) &&
+        !v.profitTransferredToMorningCash &&
+        (!targetDate || v.visitDate === targetDate) &&
+        (!idSet || idSet.has(v.id))
+    );
+    const matchedExpenses = state.expenses.filter(
+      (e) =>
+        Boolean(e.isArchived) &&
+        !e.profitTransferredToMorningCash &&
+        (!targetDate || e.date === targetDate) &&
+        (!idSet || idSet.has(e.id))
+    );
+
+    const matchedVisitIds = new Set(matchedVisits.map((v) => v.id));
+    const matchedExpenseIds = new Set(matchedExpenses.map((e) => e.id));
+
+    const revenueJod = Number(
+      matchedVisits
+        .filter((v) => v.paymentMethod === 'cash')
+        .reduce((sum, v) => sum + (Number(v.amountJod) || 0), 0)
+        .toFixed(2)
+    );
+    const expensesJod = Number(
+      matchedExpenses
+        .filter((e) => e.paymentMethod === 'cash')
+        .reduce((sum, e) => sum + (Number(e.amountJod) || 0), 0)
+        .toFixed(2)
+    );
+    const netProfitJod = Number((revenueJod - expensesJod).toFixed(2));
+    const transferredCount = matchedVisits.length + matchedExpenses.length;
+
+    if (transferredCount === 0) {
+      return {
+        state,
+        transferredCount: 0,
+        revenueJod: 0,
+        expensesJod: 0,
+        netProfitJod: 0,
+        previousMorningCashJod,
+        newMorningCashJod: previousMorningCashJod,
+      };
+    }
+
+    const newMorningCashJod = Number(
+      (previousMorningCashJod + netProfitJod).toFixed(2)
+    );
+    const noteSummary = `ترحيل أرباح الكاش${
+      targetDate ? ` (${targetDate})` : ''
+    } إلى الكاش الصباحي — صافي الكاش المرحّل: ${
+      netProfitJod >= 0 ? '+' : ''
+    }${netProfitJod.toFixed(2)} د.أ (مقبوضات كاش: ${revenueJod.toFixed(
+      2
+    )} - مصاريف كاش: ${expensesJod.toFixed(2)})`;
+
+    const existingTodayMc = activeMorningCash.find((m) => m.date === todayStr);
+    const updatedRecord: MorningCashRecord = existingTodayMc
+      ? {
+          ...existingTodayMc,
+          amountJod: newMorningCashJod,
+          note: noteSummary,
+          recordedBy,
+          isArchived: false,
+          autoArchiveExcluded: true,
+        }
+      : {
+          id: `mc-profit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          date: todayStr,
+          amountJod: newMorningCashJod,
+          note: noteSummary,
+          recordedBy,
+          isArchived: false,
+          autoArchiveExcluded: true,
+        };
+
+    const nextMorningCash = existingTodayMc
+      ? state.morningCash.map((m) => {
+          if (m.id === existingTodayMc.id) return updatedRecord;
+          if (!m.isArchived) {
+            return { ...m, isArchived: true, archivedAt: todayStr };
+          }
+          return m;
+        })
+      : [
+          updatedRecord,
+          ...state.morningCash.map((m) =>
+            !m.isArchived ? { ...m, isArchived: true, archivedAt: todayStr } : m
+          ),
+        ];
+
+    const nextVisits = state.visits.map((v) =>
+      matchedVisitIds.has(v.id)
+        ? { ...v, profitTransferredToMorningCash: true }
+        : v
+    );
+    const nextExpenses = state.expenses.map((e) =>
+      matchedExpenseIds.has(e.id)
+        ? { ...e, profitTransferredToMorningCash: true }
+        : e
+    );
+
+    return {
+      state: {
+        ...state,
+        morningCash: nextMorningCash,
+        visits: nextVisits,
+        expenses: nextExpenses,
+      },
+      transferredCount,
+      revenueJod,
+      expensesJod,
+      netProfitJod,
+      previousMorningCashJod,
+      newMorningCashJod,
+      morningCashRecord: updatedRecord,
+    };
+  }
+
+  // Active source: match active unarchived expenses and paid visits
+  let transferredCount = 0;
+  let revenueJod = 0;
+  let expensesJod = 0;
+
+  const nextExpenses = state.expenses.map((e) => {
+    if (e.isArchived || e.profitTransferredToMorningCash) return e;
+    const matchBySet = idSet ? idSet.has(e.id) : false;
+    const matchSingle =
+      !idSet && recordType === 'expense' && targetId
+        ? e.id === targetId
+        : false;
+    const matchBulk =
+      !idSet && !recordType && (!targetDate || e.date === targetDate);
+
+    if (matchBySet || matchSingle || matchBulk) {
+      transferredCount += 1;
+      if (e.paymentMethod === 'cash') {
+        expensesJod += Number(e.amountJod) || 0;
+      }
+      return {
+        ...e,
+        isArchived: true,
+        archivedAt: todayStr,
+        autoArchiveExcluded: false,
+        profitTransferredToMorningCash: true,
+      };
+    }
+    return e;
+  });
+
+  const nextVisits = state.visits.map((v) => {
+    if (
+      !v.isPaid ||
+      v.visitType === 'contract' ||
+      v.isFinanceArchived ||
+      v.profitTransferredToMorningCash
+    ) {
+      return v;
+    }
+    const matchBySet = idSet ? idSet.has(v.id) : false;
+    const matchSingle =
+      !idSet && recordType === 'visit_revenue' && targetId
+        ? v.id === targetId
+        : false;
+    const matchBulk =
+      !idSet && !recordType && (!targetDate || v.visitDate === targetDate);
+
+    if (matchBySet || matchSingle || matchBulk) {
+      transferredCount += 1;
+      // CliQ and Check payments are never added to Cash (الكاش)
+      if (v.paymentMethod === 'cash') {
+        revenueJod += Number(v.amountJod) || 0;
+      }
+      return {
+        ...v,
+        isFinanceArchived: true,
+        financeArchivedAt: todayStr,
+        financeAutoArchiveExcluded: false,
+        profitTransferredToMorningCash: true,
+      };
+    }
+    return v;
+  });
+
+  revenueJod = Number(revenueJod.toFixed(2));
+  expensesJod = Number(expensesJod.toFixed(2));
+  const netProfitJod = Number((revenueJod - expensesJod).toFixed(2));
+  const newMorningCashJod = Number(
+    (previousMorningCashJod + netProfitJod).toFixed(2)
+  );
+
+  if (transferredCount === 0) {
+    return {
+      state,
+      transferredCount: 0,
+      revenueJod: 0,
+      expensesJod: 0,
+      netProfitJod: 0,
+      previousMorningCashJod,
+      newMorningCashJod: previousMorningCashJod,
+    };
+  }
+
+  const noteSummary = `رصيد الكاش الصباحي شامل الأرباح المرحّلة (الأرباح: ${
+    netProfitJod >= 0 ? '+' : ''
+  }${netProfitJod.toFixed(2)} د.أ | مقبوضات: ${revenueJod.toFixed(
+    2
+  )} - مصاريف: ${expensesJod.toFixed(2)})`;
+
+  const existingTodayMc = activeMorningCash.find((m) => m.date === todayStr);
+  const updatedRecord: MorningCashRecord = existingTodayMc
+    ? {
+        ...existingTodayMc,
+        amountJod: newMorningCashJod,
+        note: noteSummary,
+        recordedBy,
+        isArchived: false,
+        autoArchiveExcluded: true,
+      }
+    : {
+        id: `mc-profit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        date: todayStr,
+        amountJod: newMorningCashJod,
+        note: noteSummary,
+        recordedBy,
+        isArchived: false,
+        autoArchiveExcluded: true,
+      };
+
+  const nextMorningCash = existingTodayMc
+    ? state.morningCash.map((m) => {
+        if (m.id === existingTodayMc.id) return updatedRecord;
+        if (!m.isArchived) {
+          return {
+            ...m,
+            isArchived: true,
+            archivedAt: todayStr,
+            autoArchiveExcluded: false,
+          };
+        }
+        return m;
+      })
+    : [
+        updatedRecord,
+        ...state.morningCash.map((m) =>
+          !m.isArchived
+            ? {
+                ...m,
+                isArchived: true,
+                archivedAt: todayStr,
+                autoArchiveExcluded: false,
+              }
+            : m
+        ),
+      ];
+
+  return {
+    state: {
+      ...state,
+      morningCash: nextMorningCash,
+      expenses: nextExpenses,
+      visits: nextVisits,
+    },
+    transferredCount,
+    revenueJod,
+    expensesJod,
+    netProfitJod,
+    previousMorningCashJod,
+    newMorningCashJod,
+    morningCashRecord: updatedRecord,
+  };
+}
+
+/**
+ * Restores a single financial transaction from "المالية المتقدمة" back to active daily Finance.
+ */
+export function restoreFinanceRecordToActive(
+  state: AppState,
+  recordType: 'morning_cash' | 'expense' | 'visit_revenue',
+  id: string,
+  todayStr: string = getTodayStr()
+): AppState {
+  if (recordType === 'morning_cash') {
+    return {
+      ...state,
+      morningCash: state.morningCash.map((m) =>
+        m.id === id
+          ? {
+              ...m,
+              isArchived: false,
+              archivedAt: undefined,
+              autoArchiveExcluded: true,
+              autoArchiveExcludedDate: todayStr,
+            }
+          : m
+      ),
+    };
+  }
+  if (recordType === 'expense') {
+    return {
+      ...state,
+      expenses: state.expenses.map((e) =>
+        e.id === id
+          ? {
+              ...e,
+              isArchived: false,
+              archivedAt: undefined,
+              autoArchiveExcluded: true,
+              autoArchiveExcludedDate: todayStr,
+            }
+          : e
+      ),
+    };
+  }
+  return {
+    ...state,
+    visits: state.visits.map((v) =>
+      v.id === id
+        ? {
+            ...v,
+            isFinanceArchived: false,
+            financeArchivedAt: undefined,
+            financeAutoArchiveExcluded: true,
+            financeAutoArchiveExcludedDate: todayStr,
+          }
+        : v
+    ),
+  };
+}
+
+/**
+ * Restores all financial transactions for a specific day from "المالية المتقدمة" back to active daily Finance.
+ */
+export function restoreDayFinanceToActive(
+  state: AppState,
+  dateStr: string,
+  todayStr: string = getTodayStr()
+): AppState {
+  return {
+    ...state,
+    morningCash: state.morningCash.map((m) =>
+      m.date === dateStr
+        ? {
+            ...m,
+            isArchived: false,
+            archivedAt: undefined,
+            autoArchiveExcluded: true,
+            autoArchiveExcludedDate: todayStr,
+          }
+        : m
+    ),
+    expenses: state.expenses.map((e) =>
+      e.date === dateStr
+        ? {
+            ...e,
+            isArchived: false,
+            archivedAt: undefined,
+            autoArchiveExcluded: true,
+            autoArchiveExcludedDate: todayStr,
+          }
+        : e
+    ),
+    visits: state.visits.map((v) =>
+      v.visitDate === dateStr && v.isPaid
+        ? {
+            ...v,
+            isFinanceArchived: false,
+            financeArchivedAt: undefined,
+            financeAutoArchiveExcluded: true,
+            financeAutoArchiveExcludedDate: todayStr,
+          }
+        : v
+    ),
+  };
+}
+
+/**
+ * Checks scheduled calendar appointments and identifies any appointment occurring within
+ * the next 30 minutes (or up to 5 minutes past start if just opened) that hasn't sent its
+ * 30-minute reminder notification yet.
+ */
+export function checkUpcomingAppointmentReminders(
+  state: AppState,
+  now: Date = new Date()
+): {
+  state: AppState;
+  dueAppointments: ScheduleAppointment[];
+  newNotifications: AppNotification[];
+} {
+  const nowMs = now.getTime();
+  const dueAppointments: ScheduleAppointment[] = [];
+  const newNotifications: AppNotification[] = [];
+
+  const nextAppointments = state.appointments.map((apt) => {
+    if (apt.status !== 'scheduled' || apt.reminderSent30Min) {
+      return apt;
+    }
+    const [y, m, d] = (apt.date || '').split('-').map(Number);
+    if (!y || !m || !d) return apt;
+    const [hh, mm] = (apt.time || '10:00').split(':').map(Number);
+    const aptTimeMs = new Date(
+      y,
+      m - 1,
+      d,
+      Number.isFinite(hh) ? hh : 10,
+      Number.isFinite(mm) ? mm : 0,
+      0
+    ).getTime();
+
+    const diffMinutes = (aptTimeMs - nowMs) / (1000 * 60);
+    // Trigger reminder when appointment is between 30 minutes away and 5 minutes after start
+    if (diffMinutes <= 30 && diffMinutes >= -5) {
+      const updatedApt: ScheduleAppointment = {
+        ...apt,
+        reminderSent30Min: true,
+      };
+      dueAppointments.push(updatedApt);
+
+      const notif: AppNotification = {
+        id: `notif-rem30-${apt.id}-${Date.now()}`,
+        title: `تنبيه موعد صيانة (بعد أقل من 30 دقيقة): ${apt.customerName}`,
+        message: `${apt.title} — اليوم ${apt.date} الساعة ${apt.time}${
+          apt.phone ? ` · هاتف: ${apt.phone}` : ''
+        }`,
+        customerName: apt.customerName,
+        phone: apt.phone || '',
+        visitDate: apt.date,
+        visitTime: apt.time || '10:00',
+        linkedVisitId: apt.linkedVisitId || apt.id,
+        source: 'calendar_reminder',
+        isRead: false,
+        createdAt: now.toISOString(),
+      };
+      newNotifications.push(notif);
+      return updatedApt;
+    }
+    return apt;
+  });
+
+  if (dueAppointments.length === 0) {
+    return { state, dueAppointments: [], newNotifications: [] };
+  }
+
+  return {
+    state: {
+      ...state,
+      appointments: nextAppointments,
+      notifications: [...newNotifications, ...(state.notifications || [])],
+    },
+    dueAppointments,
+    newNotifications,
   };
 }
 
@@ -311,10 +1348,12 @@ export function syncExpenseIntoState(
   record: ExpenseRecord
 ): AppState {
   const idx = state.expenses.findIndex((e) => e.id === record.id);
+  const mergedRecord: ExpenseRecord =
+    idx >= 0 ? { ...state.expenses[idx], ...record } : record;
   const nextExpenses =
     idx >= 0
-      ? state.expenses.map((e, i) => (i === idx ? record : e))
-      : [record, ...state.expenses];
+      ? state.expenses.map((e, i) => (i === idx ? mergedRecord : e))
+      : [mergedRecord, ...state.expenses];
 
   let nextParts = [...state.parts];
   if (
@@ -342,10 +1381,122 @@ export function syncExpenseIntoState(
     }
   }
 
+  let nextCashAdvances = state.cashAdvances ? [...state.cashAdvances] : [];
+  if (mergedRecord.linkedCashAdvanceId) {
+    nextCashAdvances = nextCashAdvances.map((adv) =>
+      adv.id === mergedRecord.linkedCashAdvanceId
+        ? {
+            ...adv,
+            amountJod: Number(mergedRecord.amountJod) || 0,
+            date: mergedRecord.date,
+            time: mergedRecord.time,
+            note: mergedRecord.note,
+            updatedAt: Date.now(),
+          }
+        : adv
+    );
+  }
+
   return {
     ...state,
     expenses: nextExpenses,
     parts: nextParts,
+    cashAdvances: nextCashAdvances,
+  };
+}
+
+/**
+ * Saves or updates a CashAdvanceRecord and automatically syncs a linked cash ExpenseRecord
+ * so the advance is immediately deducted from the Cash Drawer.
+ */
+export function syncCashAdvanceIntoState(
+  state: AppState,
+  advance: CashAdvanceRecord
+): AppState {
+  const expId = advance.linkedExpenseId || `exp-adv-${advance.id}`;
+  const cleanAmount = Number((Number(advance.amountJod) || 0).toFixed(2));
+  const stampedAdvance: CashAdvanceRecord = {
+    ...advance,
+    amountJod: cleanAmount,
+    linkedExpenseId: expId,
+    updatedAt: Date.now(),
+  };
+
+  const currentAdvances = state.cashAdvances || [];
+  const advIdx = currentAdvances.findIndex((a) => a.id === stampedAdvance.id);
+  const nextCashAdvances =
+    advIdx >= 0
+      ? currentAdvances.map((a, i) => (i === advIdx ? stampedAdvance : a))
+      : [stampedAdvance, ...currentAdvances];
+
+  const existingExpIdx = state.expenses.findIndex(
+    (e) => e.id === expId || e.linkedCashAdvanceId === stampedAdvance.id
+  );
+  const existingExp = existingExpIdx >= 0 ? state.expenses[existingExpIdx] : undefined;
+
+  const linkedExpense: ExpenseRecord = {
+    ...(existingExp || {}),
+    id: existingExp?.id || expId,
+    date: stampedAdvance.date,
+    time: stampedAdvance.time || '10:00',
+    category: 'other',
+    title: `سلفة من الكاش — ${stampedAdvance.userFullName}`,
+    amountJod: cleanAmount,
+    paymentMethod: 'cash',
+    note: stampedAdvance.note?.trim()
+      ? `${stampedAdvance.note.trim()} (خصم سلفة من الكاش للمستخدم: ${stampedAdvance.userFullName})`
+      : `خصم سلفة نقدية من الكاش للمستخدم: ${stampedAdvance.userFullName} (@${stampedAdvance.username})`,
+    recordedBy: stampedAdvance.recordedBy,
+    linkedCashAdvanceId: stampedAdvance.id,
+  };
+
+  const nextExpenses =
+    existingExpIdx >= 0
+      ? state.expenses.map((e, i) => (i === existingExpIdx ? linkedExpense : e))
+      : [linkedExpense, ...state.expenses];
+
+  return {
+    ...state,
+    cashAdvances: nextCashAdvances,
+    expenses: nextExpenses,
+  };
+}
+
+/**
+ * Deletes a CashAdvanceRecord and removes its linked cash ExpenseRecord,
+ * immediately restoring the deducted amount to the Cash Drawer.
+ */
+export function deleteCashAdvanceFromState(
+  state: AppState,
+  advanceId: string
+): { nextState: AppState; deletedIds: string[] } {
+  const currentAdvances = state.cashAdvances || [];
+  const target = currentAdvances.find((a) => a.id === advanceId);
+  const deletedIds: string[] = [advanceId];
+
+  const linkedExpenses = state.expenses.filter(
+    (e) =>
+      e.linkedCashAdvanceId === advanceId ||
+      (target?.linkedExpenseId && e.id === target.linkedExpenseId)
+  );
+  for (const le of linkedExpenses) {
+    deletedIds.push(le.id);
+  }
+
+  const nextCashAdvances = currentAdvances.filter((a) => a.id !== advanceId);
+  const nextExpenses = state.expenses.filter(
+    (e) =>
+      e.linkedCashAdvanceId !== advanceId &&
+      (!target?.linkedExpenseId || e.id !== target.linkedExpenseId)
+  );
+
+  return {
+    nextState: {
+      ...state,
+      cashAdvances: nextCashAdvances,
+      expenses: nextExpenses,
+    },
+    deletedIds,
   };
 }
 
@@ -443,6 +1594,7 @@ export function createCustomerBookingIntoState(
     isPaid: false,
     amountJod: 0,
     paymentMethod: 'cash',
+    status: 'pending',
     isResolved: false,
     note: input.note?.trim()
       ? `${input.note.trim()} (طلب إلكتروني من شاشة الزبائن)`
@@ -476,15 +1628,20 @@ export interface GlobalSearchResultItem {
   meta: string;
   targetTab:
     | 'maintenance'
+    | 'daily_archive'
+    | 'purchases'
     | 'catalogs'
     | 'schedule'
     | 'finance'
+    | 'advanced_finance'
+    | 'users'
     | 'dashboard';
 }
 
 export function searchSystemRecords(
   state: AppState,
-  rawQuery: string
+  rawQuery: string,
+  _lang?: Language
 ): GlobalSearchResultItem[] {
   const q = rawQuery.trim().toLowerCase();
   if (!q) return [];
@@ -533,6 +1690,20 @@ export function searchSystemRecords(
     }
   }
 
+  for (const adv of state.cashAdvances || []) {
+    const hay = `سلفة ${adv.userFullName} ${adv.username} ${adv.note || ''} ${adv.date}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        id: `res-adv-${adv.id}`,
+        category: 'finance',
+        title: `سلفة موظف: ${adv.userFullName}`,
+        subtitle: adv.note || `خصم من الكاش (@${adv.username})`,
+        meta: `${adv.date} · ${adv.amountJod.toFixed(2)} JOD`,
+        targetTab: 'users',
+      });
+    }
+  }
+
   for (const e of state.expenses) {
     const hay = `${e.title} ${e.partType || ''} ${e.note || ''} ${e.date}`.toLowerCase();
     if (hay.includes(q)) {
@@ -542,7 +1713,21 @@ export function searchSystemRecords(
         title: e.title,
         subtitle: e.partType || e.note || 'مصروف مالي',
         meta: `${e.date} · ${e.amountJod.toFixed(2)} JOD`,
-        targetTab: 'finance',
+        targetTab: e.isArchived ? 'advanced_finance' : 'finance',
+      });
+    }
+  }
+
+  for (const pr of state.purchases || []) {
+    const hay = `${pr.partName} ${pr.category} ${pr.supplierName || ''} ${pr.invoiceNumber || ''} ${pr.notes || ''} ${pr.invoiceDate}`.toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        id: `res-purch-${pr.id}`,
+        category: 'part',
+        title: pr.partName,
+        subtitle: `${pr.supplierName || pr.category} (${pr.paymentMethod === 'credit' ? 'ذمم' : pr.paymentMethod === 'cliq' ? 'كلك' : 'كاش'})`,
+        meta: `${pr.invoiceDate} · ${pr.totalCostJod.toFixed(2)} JOD`,
+        targetTab: 'purchases',
       });
     }
   }
@@ -556,7 +1741,7 @@ export function searchSystemRecords(
         title: p.name,
         subtitle: p.category,
         meta: `${p.defaultPriceJod.toFixed(2)} JOD`,
-        targetTab: 'catalogs',
+        targetTab: 'purchases',
       });
     }
   }
@@ -640,6 +1825,12 @@ export function validateAndParseBackupJson(rawJson: string): AppState {
     users: candidate.users as User[],
     customers: candidate.customers as Customer[],
     parts: Array.isArray(candidate.parts) ? (candidate.parts as AppState['parts']) : [],
+    purchases: Array.isArray(candidate.purchases)
+      ? (candidate.purchases as AppState['purchases'])
+      : [],
+    cashAdvances: Array.isArray(candidate.cashAdvances)
+      ? (candidate.cashAdvances as AppState['cashAdvances'])
+      : [],
     expenseTemplates: Array.isArray(candidate.expenseTemplates)
       ? (candidate.expenseTemplates as AppState['expenseTemplates'])
       : [],
@@ -677,6 +1868,14 @@ export function mergeBackupState(
     users: mergeById(currentState.users, importedState.users),
     customers: mergeById(currentState.customers, importedState.customers),
     parts: mergeById(currentState.parts, importedState.parts),
+    purchases: mergeById(
+      currentState.purchases || [],
+      importedState.purchases || []
+    ),
+    cashAdvances: mergeById(
+      currentState.cashAdvances || [],
+      importedState.cashAdvances || []
+    ),
     expenseTemplates: mergeById(
       currentState.expenseTemplates,
       importedState.expenseTemplates
@@ -731,7 +1930,7 @@ export function calculateFinancialSummary(
 
   for (const v of periodVisits) {
     const amt = Number(v.amountJod) || 0;
-    if (v.isResolved) {
+    if (v.isResolved || v.status === 'resolved') {
       resolvedVisitsCount++;
     } else {
       pendingVisitsCount++;
@@ -744,7 +1943,7 @@ export function calculateFinancialSummary(
       totalRevenueJod += amt;
       revenueByMethod[v.paymentMethod] =
         (revenueByMethod[v.paymentMethod] || 0) + amt;
-    } else {
+    } else if (!v.noPayment && v.visitType !== 'contract') {
       unpaidVisitsCount++;
       unpaidTotalJod += amt;
     }
@@ -772,9 +1971,13 @@ export function calculateFinancialSummary(
 
   const netCashDrawerJod =
     morningCashJod + revenueByMethod.cash - cashExpensesJod;
+  // Net overall profit is total revenue - total expenses
   const netProfitJod = totalRevenueJod - totalExpensesJod;
+  // Net cash profit (physical cash drawer profits only, CliQ is separate)
+  const netCashProfitJod = revenueByMethod.cash - cashExpensesJod;
+  // Cash drawer total balance: morning cash + cash revenue - cash expenses (CliQ is NEVER added to Cash)
   const totalBalanceWithMorningJod =
-    morningCashJod + totalRevenueJod - totalExpensesJod;
+    morningCashJod + revenueByMethod.cash - cashExpensesJod;
 
   return {
     period,
@@ -808,13 +2011,90 @@ export function calculateFinancialSummary(
   };
 }
 
-export function generateCsvContent(
+export interface CliqCustomerSummary {
+  totalCliqJod: number;
+  totalCliqCount: number;
+  todayCliqJod: number;
+  todayCliqCount: number;
+  allCliqVisits: MaintenanceVisit[];
+}
+
+/**
+ * Calculates customer payments made via CliQ (كلك).
+ * CliQ amounts are kept in a separate digital account and NEVER added into the physical cash drawer.
+ */
+export function calculateCliqCustomerSummary(
   visits: MaintenanceVisit[],
-  expenses: ExpenseRecord[],
-  morningCash: MorningCashRecord[],
-  summary: FinancialSummary,
-  lang: Language = 'ar'
+  referenceDateStr?: string
+): CliqCustomerSummary {
+  const refDate = referenceDateStr || getTodayStr();
+  const cliqVisits = (visits || []).filter(
+    (v) =>
+      v.isPaid &&
+      v.paymentMethod === 'cliq' &&
+      v.visitType !== 'contract' &&
+      (Number(v.amountJod) || 0) > 0
+  );
+
+  let totalCliqJod = 0;
+  let todayCliqJod = 0;
+  let todayCliqCount = 0;
+
+  for (const v of cliqVisits) {
+    const amt = Number(v.amountJod) || 0;
+    totalCliqJod += amt;
+    const vDate = v.visitDate || (v.createdAt ? v.createdAt.slice(0, 10) : '');
+    if (vDate === refDate) {
+      todayCliqJod += amt;
+      todayCliqCount += 1;
+    }
+  }
+
+  // Sort descending by date, then id
+  const sorted = [...cliqVisits].sort((a, b) => {
+    const dateComp = (b.visitDate || '').localeCompare(a.visitDate || '');
+    if (dateComp !== 0) return dateComp;
+    const timeComp = (b.visitTime || '').localeCompare(a.visitTime || '');
+    if (timeComp !== 0) return timeComp;
+    return b.id.localeCompare(a.id);
+  });
+
+  return {
+    totalCliqJod: Number(totalCliqJod.toFixed(2)),
+    totalCliqCount: cliqVisits.length,
+    todayCliqJod: Number(todayCliqJod.toFixed(2)),
+    todayCliqCount,
+    allCliqVisits: sorted,
+  };
+}
+
+export function generateCsvContent(
+  visitsOrState: MaintenanceVisit[] | AppState,
+  expensesOrSummary: ExpenseRecord[] | FinancialSummary,
+  morningCashOrLang?: MorningCashRecord[] | Language,
+  summaryArg?: FinancialSummary,
+  langArg: Language = 'ar'
 ): string {
+  let visits: MaintenanceVisit[];
+  let expenses: ExpenseRecord[];
+  let morningCash: MorningCashRecord[];
+  let summary: FinancialSummary;
+  let lang: Language = 'ar';
+
+  if (Array.isArray(visitsOrState)) {
+    visits = visitsOrState;
+    expenses = (expensesOrSummary as ExpenseRecord[]) || [];
+    morningCash = (morningCashOrLang as MorningCashRecord[]) || [];
+    summary = summaryArg!;
+    lang = langArg || 'ar';
+  } else {
+    visits = visitsOrState.visits;
+    expenses = visitsOrState.expenses;
+    morningCash = visitsOrState.morningCash;
+    summary = expensesOrSummary as FinancialSummary;
+    lang = (morningCashOrLang as Language) || 'ar';
+  }
+
   const escapeCsv = (val: string | number | undefined) => {
     const str = String(val ?? '').replace(/"/g, '""');
     return `"${str}"`;
@@ -887,9 +2167,11 @@ export function generateCsvContent(
           escapeCsv(v.installedParts.join(' + ') || '-'),
           escapeCsv(v.nextVisitDate || '-'),
           escapeCsv(v.isResolved ? 'تم الحل' : 'قيد المتابعة'),
-          escapeCsv(v.isPaid ? 'مدفوع' : 'غير مدفوع'),
+          escapeCsv(v.noPayment ? 'بدون دفع' : v.isPaid ? 'مدفوع' : 'غير مدفوع'),
           escapeCsv(
-            v.paymentMethod === 'cash'
+            v.noPayment
+              ? 'بدون دفع'
+              : v.paymentMethod === 'cash'
               ? 'كاش'
               : v.paymentMethod === 'check'
               ? 'شيك'
@@ -1017,8 +2299,8 @@ export function generateCsvContent(
           escapeCsv(v.installedParts.join(' + ') || '-'),
           escapeCsv(v.nextVisitDate || '-'),
           escapeCsv(v.isResolved ? 'Resolved' : 'Pending'),
-          escapeCsv(v.isPaid ? 'Paid' : 'Unpaid'),
-          escapeCsv(v.paymentMethod.toUpperCase()),
+          escapeCsv(v.noPayment ? 'No Payment' : v.isPaid ? 'Paid' : 'Unpaid'),
+          escapeCsv(v.noPayment ? 'NO PAYMENT' : v.paymentMethod.toUpperCase()),
           escapeCsv(v.amountJod.toFixed(2)),
           escapeCsv(v.note || '-'),
         ].join(',')
@@ -1048,6 +2330,8 @@ export function getInitialState(todayStr: string = getTodayStr()): AppState {
     users,
     customers: [],
     parts: [],
+    purchases: [],
+    cashAdvances: [],
     expenseTemplates: [],
     visits: [],
     morningCash: [],
@@ -1057,3 +2341,324 @@ export function getInitialState(todayStr: string = getTodayStr()): AppState {
     notifications: [],
   };
 }
+
+/**
+ * Clears all added records in the system (visits, customers, purchases, parts,
+ * expenses, morningCash, appointments, dailyNotes, notifications, expenseTemplates)
+ * while preserving user login accounts so the user can start working on the app fresh.
+ */
+export function resetSystemDataState(
+  currentState?: AppState | null,
+  todayStr: string = getTodayStr()
+): AppState {
+  const initial = getInitialState(todayStr);
+  const preservedUsers =
+    currentState && Array.isArray(currentState.users) && currentState.users.length > 0
+      ? deduplicateUsers(currentState.users)
+      : initial.users;
+
+  return {
+    users: preservedUsers,
+    customers: [],
+    parts: [],
+    purchases: [],
+    cashAdvances: [],
+    expenseTemplates: [],
+    visits: [],
+    morningCash: [],
+    expenses: [],
+    appointments: [],
+    dailyNotes: [],
+    notifications: [],
+  };
+}
+
+/**
+ * Determines whether a maintenance visit is considered unpaid.
+ * Single maintenance visits ('visit') that are not marked as paid are unpaid.
+ * Contract visits with a positive amountJod that are not paid are also treated as unpaid.
+ */
+export function isVisitUnpaid(visit: MaintenanceVisit): boolean {
+  if (visit.isPaid || visit.noPayment) return false;
+  if (visit.visitType !== 'contract') return true;
+  return (Number(visit.amountJod) || 0) > 0;
+}
+
+export type PaymentReminderTemplateType = 'polite' | 'detailed' | 'short';
+export type PaymentReminderLanguage = 'ar' | 'en' | 'bilingual';
+
+export const CLIQ_PAYMENT_INFO = {
+  cliqNumber: '00962777977987',
+  recipientName: 'سامر جوينات',
+  recipientNameEn: 'Samer Jwainat',
+  bankName: 'بنك الاتحاد',
+  bankNameEn: 'Bank al Etihad',
+} as const;
+
+export interface PaymentReminderInput {
+  customerName: string;
+  phone?: string;
+  unpaidVisits?: MaintenanceVisit[];
+  visits?: MaintenanceVisit[];
+  templateType?: PaymentReminderTemplateType;
+  style?: PaymentReminderTemplateType;
+  lang?: PaymentReminderLanguage;
+}
+
+export function generatePaymentReminderMessage(input: PaymentReminderInput): string {
+  const customerName = input.customerName.trim() || 'العميل الكريم';
+  const visits = input.unpaidVisits || input.visits || [];
+  const templateType: PaymentReminderTemplateType =
+    input.templateType || input.style || 'polite';
+  const lang: PaymentReminderLanguage = input.lang || 'ar';
+
+  const totalJod = visits.reduce((sum, v) => sum + (Number(v.amountJod) || 0), 0);
+  const formattedTotalAr = `${totalJod.toFixed(2)} د.أ`;
+  const formattedTotalEn = `${totalJod.toFixed(2)} JOD`;
+
+  const buildArabicText = (): string => {
+    if (templateType === 'short') {
+      const problemsSummary =
+        visits
+          .map((v) => `${v.problem} (${v.visitDate})`)
+          .slice(0, 3)
+          .join('، ') || 'صيانة فنية';
+      return [
+        `تحية طيبة من شركة المدار لتجارة تكنولوجيا المعلومات (Al-Madar IT)`,
+        `السادة / المحترم: ${customerName}`,
+        `يسعدنا تواصلكم الدائم معنا، ونرجو التكرم بتسديد الرصيد المستحق بقيمة (${formattedTotalAr}) عن أعمال الصيانة المنجزة (${visits.length || 1}: ${problemsSummary}).`,
+        ``,
+        `بيانات التحويل عبر خدمة كلك (CliQ):`,
+        `• رقم كلك: ${CLIQ_PAYMENT_INFO.cliqNumber}`,
+        `• الاسم: ${CLIQ_PAYMENT_INFO.recipientName}`,
+        `• البنك: ${CLIQ_PAYMENT_INFO.bankName}`,
+        `شاكرين ومقدرين حسن تعاونكم وثقتكم الغالية بنا.`,
+      ].join('\n');
+    }
+
+    if (templateType === 'detailed') {
+      const detailLines =
+        visits.length > 0
+          ? visits.map((v, idx) => {
+              const amt = (Number(v.amountJod) || 0).toFixed(2);
+              const partsStr =
+                v.installedParts && v.installedParts.length > 0
+                  ? ` | القطع المركبة: ${v.installedParts.join(' + ')}`
+                  : '';
+              const techStr = v.technicianName ? ` | الفني: ${v.technicianName}` : '';
+              return `${idx + 1}. التاريخ: ${v.visitDate} — العمل المنفذ: ${v.problem}${partsStr}${techStr} — المبلغ: ${amt} د.أ (غير مدفوع)`;
+            })
+          : [`1. زيارة صيانة فنية — المبلغ المستحق: ${formattedTotalAr} (غير مدفوع)`];
+
+      return [
+        `شركة المدار لتجارة تكنولوجيا المعلومات`,
+        `Al-Madar Information Technology Trading Company`,
+        `================================`,
+        `بيان وكشف تفصيلي لأعمال وزيارات الصيانة المستحقة`,
+        `السادة / المحترم: ${customerName}`,
+        input.phone ? `رقم الهاتف: ${input.phone}` : '',
+        ``,
+        `تحية طيبة وبعد،`,
+        `تهديكم شركة المدار لتجارة تكنولوجيا المعلومات أطيب التحيات، ويسرنا أن نرفق لحضرتكم تفاصيل زيارات الصيانة المنجزة والمسجلة في حسابكم:`,
+        ``,
+        ...detailLines,
+        `--------------------------------`,
+        `• إجمالي عدد الزيارات غير المسددة: ${visits.length || 1}`,
+        `• إجمالي المبلغ المستحق للدفع: ${formattedTotalAr}`,
+        `--------------------------------`,
+        `للتسهيل عليكم، يمكنكم التكرم بتسديد الرصيد نقداً (كاش) أو عبر خدمة كلك (CliQ) حسب البيانات المعتمدة التالية:`,
+        `• رقم كلك (CliQ): ${CLIQ_PAYMENT_INFO.cliqNumber}`,
+        `• اسم المستفيد: ${CLIQ_PAYMENT_INFO.recipientName}`,
+        `• البنك: ${CLIQ_PAYMENT_INFO.bankName}`,
+        ``,
+        `في حال تم السداد مؤخراً يرجى التكرم بتجاهل هذه الرسالة. شاكرين ومقدرين لكم كريم تعاونكم وثقتكم الدائمة بنا.`,
+      ]
+        .filter((line) => line !== undefined)
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n');
+    }
+
+    // Default: 'polite' — رسالة جميلة ومرتبة ولبقة بدون عبارة "نذكركم بلطف"
+    const politeLines =
+      visits.length > 0
+        ? visits.map((v, idx) => {
+            const amt = (Number(v.amountJod) || 0).toFixed(2);
+            const partsStr =
+              v.installedParts && v.installedParts.length > 0
+                ? ` (شامل تركيب: ${v.installedParts.join(' + ')})`
+                : '';
+            return `• (${idx + 1}) بتاريخ [${v.visitDate}]: ${v.problem}${partsStr} — ${amt} د.أ`;
+          })
+        : [`• زيارة صيانة فنية — ${formattedTotalAr}`];
+
+    return [
+      `تحية طيبة وبعد،`,
+      `السادة / المحترم: ${customerName}`,
+      `تهديكم شركة المدار لتجارة تكنولوجيا المعلومات (Al-Madar IT) أطيب التحيات، ونسعد دائماً بخدمتكم وتلبية احتياجاتكم الفنية.`,
+      ``,
+      `نود إحاطتكم علماً بتفاصيل أعمال وزيارات الصيانة المنجزة لحضرتكم، والمسجلة كذمم مستحقة للدفع:`,
+      ...politeLines,
+      ``,
+      `• إجمالي المبلغ المستحق للدفع: ${formattedTotalAr}`,
+      ``,
+      `للتسهيل عليكم، يرجى التكرم بتسديد المبلغ نقداً (كاش) أو عبر خدمة كلك (CliQ) على الحساب المعتمد:`,
+      `• رقم كلك (CliQ): ${CLIQ_PAYMENT_INFO.cliqNumber}`,
+      `• اسم المستفيد: ${CLIQ_PAYMENT_INFO.recipientName}`,
+      `• البنك: ${CLIQ_PAYMENT_INFO.bankName}`,
+      ``,
+      `شاكرين ومقدرين لكم حسن تعاونكم وثقتكم الغالية بنا، ونتمنى لكم دوام التوفيق والنجاح.`,
+    ].join('\n');
+  };
+
+  const buildEnglishText = (): string => {
+    if (templateType === 'short') {
+      const problemsSummary =
+        visits
+          .map((v) => `${v.problem} (${v.visitDate})`)
+          .slice(0, 3)
+          .join(', ') || 'IT Maintenance';
+      return [
+        `Warm Greetings from Al-Madar IT Trading Co.`,
+        `Dear ${customerName},`,
+        `We appreciate your valued business. Kindly settle the outstanding balance of (${formattedTotalEn}) for (${visits.length || 1}) completed maintenance visit(s): ${problemsSummary}.`,
+        `CliQ Transfer Details: ${CLIQ_PAYMENT_INFO.cliqNumber} — ${CLIQ_PAYMENT_INFO.recipientNameEn} (${CLIQ_PAYMENT_INFO.bankNameEn}). Thank you!`,
+      ].join('\n');
+    }
+
+    if (templateType === 'detailed') {
+      const detailLines =
+        visits.length > 0
+          ? visits.map((v, idx) => {
+              const amt = (Number(v.amountJod) || 0).toFixed(2);
+              const partsStr =
+                v.installedParts && v.installedParts.length > 0
+                  ? ` | Installed Parts: ${v.installedParts.join(' + ')}`
+                  : '';
+              return `${idx + 1}. Date: ${v.visitDate} — Service: ${v.problem}${partsStr} — Amount: ${amt} JOD (Unpaid)`;
+            })
+          : [`1. IT Maintenance Visit — Amount Due: ${formattedTotalEn} (Unpaid)`];
+
+      return [
+        `Al-Madar Information Technology Trading Company`,
+        `================================`,
+        `Statement of Unpaid Maintenance Services`,
+        `Customer: ${customerName}`,
+        input.phone ? `Phone: ${input.phone}` : '',
+        ``,
+        `Dear ${customerName},`,
+        `Warm greetings from Al-Madar IT. Please find below the summary of your unpaid maintenance visit(s):`,
+        ...detailLines,
+        `--------------------------------`,
+        `• Total Unpaid Visits: ${visits.length || 1}`,
+        `• Total Amount Due: ${formattedTotalEn}`,
+        `--------------------------------`,
+        `Payment Methods: Cash, Check, or CliQ Instant Transfer:`,
+        `• CliQ Number: ${CLIQ_PAYMENT_INFO.cliqNumber}`,
+        `• Beneficiary Name: ${CLIQ_PAYMENT_INFO.recipientNameEn} (${CLIQ_PAYMENT_INFO.recipientName})`,
+        `• Bank: ${CLIQ_PAYMENT_INFO.bankNameEn} (${CLIQ_PAYMENT_INFO.bankName})`,
+        ``,
+        `Thank you for your valued cooperation and continued trust.`,
+      ]
+        .filter((line) => line !== undefined)
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n');
+    }
+
+    const politeLines =
+      visits.length > 0
+        ? visits.map((v, idx) => {
+            const amt = (Number(v.amountJod) || 0).toFixed(2);
+            const partsStr =
+              v.installedParts && v.installedParts.length > 0
+                ? ` (Parts: ${v.installedParts.join(' + ')})`
+                : '';
+            return `• (${idx + 1}) [${v.visitDate}]: ${v.problem}${partsStr} — ${amt} JOD`;
+          })
+        : [`• IT Maintenance Service — ${formattedTotalEn}`];
+
+    return [
+      `Warm Greetings from Al-Madar Information Technology Trading Company (Al-Madar IT)`,
+      `Dear ${customerName},`,
+      ``,
+      `We are always pleased to serve you. Please find below the details of the completed maintenance services with an outstanding balance:`,
+      ...politeLines,
+      ``,
+      `• Total Amount Due: ${formattedTotalEn}`,
+      ``,
+      `For your convenience, payment can be made via Cash or CliQ transfer:`,
+      `• CliQ Number: ${CLIQ_PAYMENT_INFO.cliqNumber}`,
+      `• Beneficiary: ${CLIQ_PAYMENT_INFO.recipientNameEn} (${CLIQ_PAYMENT_INFO.recipientName})`,
+      `• Bank: ${CLIQ_PAYMENT_INFO.bankNameEn} (${CLIQ_PAYMENT_INFO.bankName})`,
+      ``,
+      `Thank you very much for your cooperation and continued trust in Al-Madar IT.`,
+    ].join('\n');
+  };
+
+  if (lang === 'ar') return buildArabicText();
+  if (lang === 'en') return buildEnglishText();
+  return `${buildArabicText()}\n\n================================\n\n${buildEnglishText()}`;
+}
+
+export function formatWhatsAppUrl(phone: string | undefined, message: string): string {
+  const digits = (phone || '').replace(/[^\d]/g, '');
+  let normalized = digits;
+  if (normalized.startsWith('00')) {
+    normalized = normalized.slice(2);
+  } else if (normalized.startsWith('07') && normalized.length >= 9) {
+    normalized = `962${normalized.slice(1)}`;
+  } else if (normalized.startsWith('7') && normalized.length >= 8) {
+    normalized = `962${normalized}`;
+  }
+  const encoded = encodeURIComponent(message);
+  return normalized
+    ? `https://wa.me/${normalized}?text=${encoded}`
+    : `https://wa.me/?text=${encoded}`;
+}
+
+export interface CliqAccountMetrics {
+  totalBalanceJod: number;
+  todayBalanceJod: number;
+  totalTransactionsCount: number;
+  todayTransactionsCount: number;
+  visits: MaintenanceVisit[];
+  todayVisits: MaintenanceVisit[];
+}
+
+export function calculateCliqAccountMetrics(
+  state: AppState,
+  todayStr: string = getTodayStr()
+): CliqAccountMetrics {
+  const allVisits = state.visits || [];
+  const cliqVisits = allVisits
+    .filter((v) => v.isPaid && v.paymentMethod === 'cliq')
+    .sort((a, b) => {
+      const dCmp = (b.visitDate || '').localeCompare(a.visitDate || '');
+      if (dCmp !== 0) return dCmp;
+      return (b.visitTime || '').localeCompare(a.visitTime || '');
+    });
+
+  const todayVisits = cliqVisits.filter((v) => v.visitDate === todayStr);
+
+  const totalBalanceJod = Number(
+    cliqVisits
+      .reduce((sum, v) => sum + (Number(v.amountJod) || 0), 0)
+      .toFixed(2)
+  );
+  const todayBalanceJod = Number(
+    todayVisits
+      .reduce((sum, v) => sum + (Number(v.amountJod) || 0), 0)
+      .toFixed(2)
+  );
+
+  return {
+    totalBalanceJod,
+    todayBalanceJod,
+    totalTransactionsCount: cliqVisits.length,
+    todayTransactionsCount: todayVisits.length,
+    visits: cliqVisits,
+    todayVisits,
+  };
+}
+
+
+

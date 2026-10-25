@@ -14,15 +14,24 @@ import {
   Wrench,
   BarChart3,
   Database,
+  Clock,
+  Wallet,
+  Camera,
+  Package,
+  X,
+  Smartphone,
 } from 'lucide-react';
-import type { AppState, DailyNote, Language } from '../types';
+import type { AppState, DailyNote, Language, MaintenanceVisit } from '../types';
 import {
+  calculateCliqAccountMetrics,
   calculateFinancialSummary,
   formatJod,
   getDayName,
   getTodayStr,
 } from '../utils/logic';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
+import { WorkNotesScannerModal, type ExtractedWorkData } from './WorkNotesScannerModal';
+import { CliqAccountModal } from './CliqAccountModal';
 
 interface DashboardHomeViewProps {
   lang: Language;
@@ -32,7 +41,10 @@ interface DashboardHomeViewProps {
     tab:
       | 'dashboard'
       | 'maintenance'
+      | 'purchases'
+      | 'daily_archive'
       | 'finance'
+      | 'advanced_finance'
       | 'catalogs'
       | 'schedule'
       | 'stats'
@@ -41,6 +53,9 @@ interface DashboardHomeViewProps {
   ) => void;
   onSaveNote: (note: DailyNote) => void;
   onDeleteNote: (id: string) => void;
+  onDeleteVisit?: (id: string) => void;
+  onSaveVisit?: (visit: MaintenanceVisit) => void;
+  canDelete?: boolean;
 }
 
 export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
@@ -50,10 +65,26 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
   onNavigate,
   onSaveNote,
   onDeleteNote,
+  onDeleteVisit,
+  onSaveVisit,
+  canDelete = true,
 }) => {
   const todayStr = getTodayStr();
   const dailySummary = calculateFinancialSummary(state, 'daily', todayStr);
   const weeklySummary = calculateFinancialSummary(state, 'weekly', todayStr);
+  const cashAdvances = state.cashAdvances || [];
+  const totalCashAdvancesJod = Number(
+    cashAdvances.reduce((sum, a) => sum + (Number(a.amountJod) || 0), 0).toFixed(2)
+  );
+  const todayCashAdvances = cashAdvances.filter((a) => a.date === todayStr);
+  const todayCashAdvancesCount = todayCashAdvances.length;
+  const todayCashAdvancesJod = Number(
+    todayCashAdvances.reduce((sum, a) => sum + (Number(a.amountJod) || 0), 0).toFixed(2)
+  );
+
+  // CliQ Customer Account Metrics (مفصول عن الكاش)
+  const cliqMetrics = calculateCliqAccountMetrics(state, todayStr);
+  const [isCliqModalOpen, setIsCliqModalOpen] = useState(false);
 
   // Daily Note Form State
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -61,20 +92,32 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
   const [noteContent, setNoteContent] = useState('');
   const [notePinned, setNotePinned] = useState(true);
   const [noteSearchQuery, setNoteSearchQuery] = useState('');
+  const [recentlyAddedNoteId, setRecentlyAddedNoteId] = useState<string | null>(null);
+  const [undoBannerMsg, setUndoBannerMsg] = useState<string>('');
   const [deleteTargetNote, setDeleteTargetNote] = useState<DailyNote | null>(
     null
   );
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
 
-  const todayVisits = state.visits.filter((v) => v.visitDate === todayStr);
-  const portalVisits = state.visits.filter((v) => v.source === 'customer_portal');
+  const portalVisits = state.visits.filter(
+    (v) => v.source === 'customer_portal' && !v.isArchived
+  );
+  const activeMaintenanceRequests = state.visits.filter(
+    (v) => !v.isArchived && !v.isResolved && v.status !== 'resolved'
+  );
   const todayAppointments = state.appointments.filter((a) => a.date === todayStr);
 
   const handleNoteSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!noteTitle.trim() && !noteContent.trim()) return;
 
+    const noteId =
+      editingNoteId ||
+      `note-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const isNew = !editingNoteId;
+
     const record: DailyNote = {
-      id: editingNoteId || `note-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      id: noteId,
       date: todayStr,
       title:
         noteTitle.trim() ||
@@ -90,6 +133,34 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
     setEditingNoteId(null);
     setNoteTitle('');
     setNoteContent('');
+
+    if (isNew) {
+      setRecentlyAddedNoteId(noteId);
+      setUndoBannerMsg(
+        lang === 'ar'
+          ? `تمت إضافة عمل اليوم «${record.title}» بنجاح. يمكنك التراجع أو إلغاء الإضافة في أي وقت.`
+          : `Added daily work note "${record.title}" successfully.`
+      );
+      setTimeout(() => {
+        setRecentlyAddedNoteId(null);
+        setUndoBannerMsg('');
+      }, 12000);
+    }
+  };
+
+  const handleScanNotesInsert = (scannedText: string, mode: 'replace' | 'append') => {
+    if (mode === 'append' && noteContent.trim()) {
+      setNoteContent(`${noteContent.trim()}\n\n${scannedText.trim()}`);
+    } else {
+      setNoteContent(scannedText.trim());
+    }
+    if (!noteTitle.trim()) {
+      setNoteTitle(
+        lang === 'ar'
+          ? `ملاحظات ورقة العمل (${todayStr})`
+          : `Work Notes Sheet (${todayStr})`
+      );
+    }
   };
 
   const noteQ = noteSearchQuery.trim().toLowerCase();
@@ -108,69 +179,158 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top 4 Synchronized Overview Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Top Synchronized Overview Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 items-stretch">
         <button
           type="button"
           onClick={() => onNavigate('maintenance')}
-          className="text-start rounded-2xl bg-white border border-slate-200 p-5 shadow-sm hover:border-[#0B3B68] transition-colors cursor-pointer"
+          className="text-start rounded-2xl bg-white border border-slate-200 p-5 shadow-sm hover:border-[#0B3B68] transition-colors cursor-pointer h-full flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between text-xs font-bold text-slate-500">
-            <span>
-              {lang === 'ar' ? 'طلبات وزيارات الصيانة' : 'Maintenance Requests'}
-            </span>
-            <Wrench className="w-4 h-4 text-[#0B3B68]" />
+          <div>
+            <div className="flex items-center justify-between text-xs font-bold text-slate-500">
+              <span>
+                {lang === 'ar' ? 'طلبات الصيانة' : 'Maintenance Requests'}
+              </span>
+              <Wrench className="w-4 h-4 text-[#0B3B68]" />
+            </div>
+            <div className="text-3xl font-mono font-extrabold tabular-nums text-[#0B3B68] mt-2">
+              {activeMaintenanceRequests.length}
+            </div>
           </div>
-          <div className="text-3xl font-mono font-extrabold tabular-nums text-[#0B3B68] mt-2">
-            {state.visits.length}
-          </div>
-          <div className="text-xs text-slate-600 mt-1.5">
+          <div className="text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100">
             {lang === 'ar'
-              ? `اليوم: ${todayVisits.length} · من بوابة الزبائن: ${portalVisits.length}`
-              : `Today: ${todayVisits.length} · Portal: ${portalVisits.length}`}
+              ? `قيد المتابعة: ${activeMaintenanceRequests.length} · إجمالي: ${state.visits.length}`
+              : `Active: ${activeMaintenanceRequests.length} · Total: ${state.visits.length}`}
           </div>
         </button>
 
         <button
           type="button"
-          onClick={() => onNavigate('finance')}
-          className="text-start rounded-2xl bg-white border border-slate-200 p-5 shadow-sm hover:border-[#1E824C] transition-colors cursor-pointer"
+          onClick={() => {
+            const el = document.getElementById('daily-work-notes-section');
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+          }}
+          className="text-start rounded-2xl bg-amber-50/70 border border-amber-200 p-5 shadow-sm hover:border-[#E58E26] transition-colors cursor-pointer h-full flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between text-xs font-bold text-slate-500">
-            <span>
-              {lang === 'ar'
-                ? 'صافي الكاش بالصندوق اليوم (JOD)'
-                : 'Net Drawer Cash Today (JOD)'}
-            </span>
-            <Banknote className="w-4 h-4 text-[#1E824C]" />
+          <div>
+            <div className="flex items-center justify-between text-xs font-bold text-amber-800">
+              <span>
+                {lang === 'ar'
+                  ? 'ملاحظات ومهام العمل'
+                  : 'Daily Work Notes & Tasks'}
+              </span>
+              <ClipboardList className="w-4 h-4 text-[#E58E26]" />
+            </div>
+            <div className="text-3xl font-mono font-extrabold tabular-nums text-[#E58E26] mt-2">
+              {state.dailyNotes.length}
+            </div>
           </div>
-          <div className="text-3xl font-mono font-extrabold tabular-nums text-[#1E824C] mt-2">
-            {formatJod(dailySummary.netCashDrawerJod, lang)}
-          </div>
-          <div className="text-xs text-slate-600 font-mono tabular-nums mt-1.5">
+          <div className="text-xs text-amber-800/80 mt-2 pt-2 border-t border-amber-200/60">
             {lang === 'ar'
-              ? `كاش الصباح: ${dailySummary.morningCashJod} · مقبوضات: ${dailySummary.totalRevenueJod}`
-              : `Morning: ${dailySummary.morningCashJod} · Rev: ${dailySummary.totalRevenueJod}`}
+              ? `${state.dailyNotes.filter((n) => !n.isCompleted).length} مهام قيد المتابعة · اضغط للملاحظات`
+              : `${state.dailyNotes.filter((n) => !n.isCompleted).length} pending tasks · Click to view`}
+          </div>
+        </button>
+
+        {/* Morning Cash Box + Employee Cash Advances Box Directly Underneath */}
+        <div className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => onNavigate('finance')}
+            className="text-start rounded-2xl bg-white border border-slate-200 p-5 shadow-sm hover:border-[#1E824C] transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-xs font-bold text-slate-500">
+              <span>
+                {lang === 'ar'
+                  ? 'الكاش الصباحي وصافي الدرج (JOD)'
+                  : 'Morning Cash & Drawer (JOD)'}
+              </span>
+              <Banknote className="w-4 h-4 text-[#1E824C]" />
+            </div>
+            <div className="text-3xl font-mono font-extrabold tabular-nums text-[#1E824C] mt-2">
+              {formatJod(dailySummary.netCashDrawerJod, lang)}
+            </div>
+            <div className="text-xs text-slate-600 font-mono tabular-nums mt-1.5">
+              {lang === 'ar'
+                ? `كاش الصباح: ${dailySummary.morningCashJod} · كاش الصيانة: +${dailySummary.revenueByMethod.cash}`
+                : `Morning: ${dailySummary.morningCashJod} · Cash: +${dailySummary.revenueByMethod.cash}`}
+            </div>
+          </button>
+
+          {/* Employee Cash Advances Box directly under Morning Cash Box */}
+          <button
+            type="button"
+            onClick={() => onNavigate('users')}
+            className="text-start rounded-2xl bg-rose-50/70 border border-rose-200 p-4 shadow-sm hover:border-rose-500 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between text-xs font-extrabold text-rose-800">
+              <span>
+                {lang === 'ar' ? 'سلف الموظفين (خصم من الكاش)' : 'Employee Cash Advances'}
+              </span>
+              <Wallet className="w-4 h-4 text-rose-600" />
+            </div>
+            <div className="text-2xl font-mono font-extrabold tabular-nums text-rose-600 mt-1.5">
+              -{formatJod(todayCashAdvancesJod, lang)}
+            </div>
+            <div className="text-[11px] text-rose-900/80 font-bold mt-1">
+              {lang === 'ar'
+                ? `سلف اليوم: ${todayCashAdvancesCount} · إجمالي السلف: ${formatJod(totalCashAdvancesJod, lang)}`
+                : `Today: ${todayCashAdvancesCount} · Total: ${formatJod(totalCashAdvancesJod, lang)}`}
+            </div>
+          </button>
+        </div>
+
+        {/* Dedicated CliQ Customer Account Box — مربع حساب الزبون كلك */}
+        <button
+          type="button"
+          onClick={() => setIsCliqModalOpen(true)}
+          className="text-start rounded-2xl bg-indigo-50/80 border border-indigo-200 p-5 shadow-sm hover:border-indigo-600 transition-colors cursor-pointer h-full flex flex-col justify-between"
+        >
+          <div>
+            <div className="flex items-center justify-between text-xs font-bold text-indigo-900">
+              <span>
+                {lang === 'ar' ? 'حساب الزبون كلك (CliQ)' : 'CliQ Customer Account'}
+              </span>
+              <Smartphone className="w-4 h-4 text-indigo-600" />
+            </div>
+            <div className="text-3xl font-mono font-extrabold tabular-nums text-indigo-700 mt-2">
+              +{formatJod(cliqMetrics.totalBalanceJod, lang)}
+            </div>
+            <div className="text-xs text-indigo-950 font-bold mt-1.5">
+              {lang === 'ar'
+                ? `كلك اليوم: +${formatJod(cliqMetrics.todayBalanceJod, lang)} · ${cliqMetrics.totalTransactionsCount} تحويل`
+                : `Today: +${formatJod(cliqMetrics.todayBalanceJod, lang)} · ${cliqMetrics.totalTransactionsCount} transfers`}
+            </div>
+          </div>
+          <div className="text-[11px] text-indigo-900/80 mt-2 pt-2 border-t border-indigo-200/70 font-bold flex items-center justify-between">
+            <span className="text-amber-800 bg-amber-100/70 px-1.5 py-0.5 rounded text-[10px] font-black">
+              {lang === 'ar' ? 'مفصول عن الكاش' : 'Not in Cash'}
+            </span>
+            <span className="text-indigo-800 underline font-black">
+              {lang === 'ar' ? 'عرض القائمة' : 'View List'}
+            </span>
           </div>
         </button>
 
         <button
           type="button"
           onClick={() => onNavigate('schedule')}
-          className="text-start rounded-2xl bg-white border border-slate-200 p-5 shadow-sm hover:border-[#E58E26] transition-colors cursor-pointer"
+          className="text-start rounded-2xl bg-white border border-slate-200 p-5 shadow-sm hover:border-[#E58E26] transition-colors cursor-pointer h-full flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between text-xs font-bold text-slate-500">
-            <span>
-              {lang === 'ar'
-                ? 'جدول المواعيد الأسبوعي'
-                : 'Weekly Schedule Calendar'}
-            </span>
-            <Calendar className="w-4 h-4 text-[#E58E26]" />
+          <div>
+            <div className="flex items-center justify-between text-xs font-bold text-slate-500">
+              <span>
+                {lang === 'ar'
+                  ? 'جدول المواعيد الأسبوعي'
+                  : 'Weekly Schedule Calendar'}
+              </span>
+              <Calendar className="w-4 h-4 text-[#E58E26]" />
+            </div>
+            <div className="text-3xl font-mono font-extrabold tabular-nums text-slate-900 mt-2">
+              {state.appointments.length}
+            </div>
           </div>
-          <div className="text-3xl font-mono font-extrabold tabular-nums text-slate-900 mt-2">
-            {state.appointments.length}
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600 mt-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600 mt-2 pt-2 border-t border-slate-100">
             <span>{lang === 'ar' ? 'مواعيد اليوم' : 'Today'}</span>
             <span className="font-bold text-[#0B3B68]">
               ({getDayName(todayStr, lang)})
@@ -184,36 +344,46 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('catalogs')}
-          className="text-start rounded-2xl bg-[#0B3B68] text-white p-5 shadow-sm hover:bg-[#155E95] transition-colors cursor-pointer"
+          className="text-start rounded-2xl bg-[#0B3B68] text-white p-5 shadow-sm hover:bg-[#155E95] transition-colors cursor-pointer h-full flex flex-col justify-between"
         >
-          <div className="flex items-center justify-between text-xs font-bold text-sky-200">
-            <span>
-              {lang === 'ar'
-                ? 'الزبائن وعقود الصيانة والقطع'
-                : 'Customers, Contracts & Parts'}
-            </span>
-            <Building2 className="w-4 h-4 text-amber-300" />
+          <div>
+            <div className="flex items-center justify-between text-xs font-bold text-sky-200">
+              <span>
+                {lang === 'ar'
+                  ? 'الزبائن وعقود الصيانة والقطع'
+                  : 'Customers, Contracts & Parts'}
+              </span>
+              <Building2 className="w-4 h-4 text-amber-300" />
+            </div>
+            <div className="text-3xl font-mono font-extrabold tabular-nums text-white mt-2">
+              {state.customers.length}
+            </div>
           </div>
-          <div className="text-3xl font-mono font-extrabold tabular-nums text-white mt-2">
-            {state.customers.length}
-          </div>
-          <div className="text-xs text-amber-300 mt-1.5">
+          <div className="text-xs text-amber-300 mt-2 pt-2 border-t border-white/10">
             {lang === 'ar'
-              ? `أنواع القطع المسجلة: ${state.parts.length} · مصاريف جاهزة: ${state.expenseTemplates.length}`
-              : `Saved Parts: ${state.parts.length} · Templates: ${state.expenseTemplates.length}`}
+              ? `أنواع القطع: ${state.parts.length} · مصاريف: ${state.expenseTemplates.length}`
+              : `Parts: ${state.parts.length} · Templates: ${state.expenseTemplates.length}`}
           </div>
         </button>
       </div>
 
       {/* Quick Touchscreen Action Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-2.5">
+        <button
+          type="button"
+          onClick={() => setIsCliqModalOpen(true)}
+          className="min-h-[52px] px-4 py-3 rounded-2xl bg-indigo-900 hover:bg-indigo-950 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+        >
+          <Smartphone className="w-4 h-4 text-amber-300 shrink-0" />
+          <span>{lang === 'ar' ? 'حساب كلك (CliQ)' : 'CliQ Account'}</span>
+        </button>
         <button
           type="button"
           onClick={() => onNavigate('maintenance')}
           className="min-h-[52px] px-4 py-3 rounded-2xl bg-[#0B3B68] hover:bg-[#155E95] text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
         >
           <Wrench className="w-4 h-4 text-amber-300 shrink-0" />
-          <span>{lang === 'ar' ? 'تسجيل زيارة صيانة' : 'New Maintenance Visit'}</span>
+          <span>{lang === 'ar' ? 'طلبات الصيانة' : 'Maintenance'}</span>
         </button>
 
         <button
@@ -227,6 +397,28 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
 
         <button
           type="button"
+          onClick={() => onNavigate('purchases')}
+          className="min-h-[52px] px-4 py-3 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+        >
+          <Package className="w-4 h-4 shrink-0" />
+          <span>{lang === 'ar' ? 'المشتريات وفواتير القطع' : 'Purchases & Parts'}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigate('advanced_finance')}
+          className="min-h-[52px] px-4 py-3 rounded-2xl bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-[#145A32] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+        >
+          <Wallet className="w-4 h-4 text-[#1E824C] shrink-0" />
+          <span>
+            {lang === 'ar'
+              ? 'المالية المتقدمة والإحصائيات'
+              : 'Adv. Finance & Stats'}
+          </span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => onNavigate('schedule')}
           className="min-h-[52px] px-4 py-3 rounded-2xl bg-[#E58E26] hover:bg-[#d17d1b] text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
         >
@@ -236,17 +428,8 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
 
         <button
           type="button"
-          onClick={() => onNavigate('stats')}
-          className="min-h-[52px] px-4 py-3 rounded-2xl bg-white border border-slate-300 hover:bg-slate-50 text-[#0B3B68] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-        >
-          <BarChart3 className="w-4 h-4 text-[#0B3B68] shrink-0" />
-          <span>{lang === 'ar' ? 'الإحصاءات وتصدير التقارير' : 'Statistics & Export'}</span>
-        </button>
-
-        <button
-          type="button"
           onClick={() => onNavigate('backup')}
-          className="col-span-2 sm:col-span-1 min-h-[52px] px-4 py-3 rounded-2xl bg-white border border-slate-300 hover:bg-slate-50 text-[#0B3B68] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+          className="min-h-[52px] px-4 py-3 rounded-2xl bg-white border border-slate-300 hover:bg-slate-50 text-[#0B3B68] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-sm cursor-pointer"
         >
           <Database className="w-4 h-4 text-[#1E824C] shrink-0" />
           <span>{lang === 'ar' ? 'نسخة احتياطية (تصدير/استيراد)' : 'Backup & Restore'}</span>
@@ -256,8 +439,8 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
       {/* Main Split: Daily Notes & Work Summary (Left/Right) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Daily Notes & Work Summary Panel (7 cols) */}
-        <div className="lg:col-span-7 rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div id="daily-work-notes-section" className="lg:col-span-7 rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-100 gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-[#E58E26] text-white flex items-center justify-center shrink-0">
                 <ClipboardList className="w-5 h-5" />
@@ -265,17 +448,66 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
               <div>
                 <h2 className="text-base sm:text-lg font-extrabold text-slate-900">
                   {lang === 'ar'
-                    ? 'ملاحظات العمل وملخص العمل اليومي على الصفحة الرئيسية'
+                    ? 'ملاحظات ومهام العمل اليومي'
                     : 'Daily Work Summary & Quick Notes'}
                 </h2>
-                <p className="text-xs text-slate-500">
-                  {lang === 'ar'
-                    ? 'سجّل ملاحظاتك السريعة ومهام الصيانة أو ملخص العمل اليومي للفريق'
-                    : 'Add quick operational notes, reminders, and daily work summaries'}
-                </p>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setIsScannerOpen(true)}
+              className="min-h-[42px] px-3.5 py-2 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-950 text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-colors cursor-pointer shadow-2xs shrink-0"
+            >
+              <Camera className="w-4 h-4 text-[#E58E26] shrink-0" />
+              <span>
+                {lang === 'ar'
+                  ? 'تصوير ورقة ملاحظات العمل وإدراجها كتابياً'
+                  : 'Scan Work Notes Paper (OCR)'}
+              </span>
+            </button>
           </div>
+
+          {/* Undo / Cancellation Banner */}
+          {undoBannerMsg && (
+            <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 flex flex-wrap items-center justify-between gap-3 shadow-xs animate-in fade-in">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-5 h-5 text-[#1E824C] shrink-0" />
+                <span className="font-extrabold text-xs sm:text-sm">{undoBannerMsg}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {recentlyAddedNoteId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDeleteNote(recentlyAddedNoteId);
+                      setRecentlyAddedNoteId(null);
+                      setUndoBannerMsg(
+                        lang === 'ar'
+                          ? 'تم إلغاء العمل والتراجع عن الإضافة بنجاح.'
+                          : 'Work cancelled and undone successfully.'
+                      );
+                      setTimeout(() => setUndoBannerMsg(''), 4000);
+                    }}
+                    className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{lang === 'ar' ? 'إلغاء العمل اليوم (تراجع)' : 'Undo Added Work'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUndoBannerMsg('');
+                    setRecentlyAddedNoteId(null);
+                  }}
+                  className="text-amber-800 hover:text-amber-950 p-1 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Add / Edit Note Form */}
           <form
@@ -443,14 +675,17 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
                     >
                       <Edit3 className="w-3.5 h-3.5" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTargetNote(n)}
-                      aria-label={lang === 'ar' ? `حذف ملاحظة ${n.title}` : `Delete note ${n.title}`}
-                      className="min-h-[38px] min-w-[38px] rounded-xl border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 flex items-center justify-center cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTargetNote(n)}
+                        aria-label={lang === 'ar' ? `حذف أو إلغاء ملاحظة ${n.title}` : `Delete or cancel note ${n.title}`}
+                        className="min-h-[38px] px-2.5 py-1 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 flex items-center gap-1 cursor-pointer text-xs font-bold"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>{lang === 'ar' ? 'إلغاء' : 'Delete'}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -460,17 +695,12 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
 
         {/* Automatic Daily & Weekly Operational Digest (5 cols) */}
         <div className="lg:col-span-5 rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
-          <div className="pb-3 border-b border-slate-100">
+          <div className="pb-2.5 border-b border-slate-100">
             <h3 className="text-base sm:text-lg font-extrabold text-[#0B3B68]">
               {lang === 'ar'
-                ? 'ملخص الترحيل التلقائي بين الصفحات'
-                : 'Live Cross-Page Synchronization Digest'}
+                ? 'ملخص العمليات اليومية'
+                : 'Live Operational Summary'}
             </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {lang === 'ar'
-                ? 'تتحدث هذه الأرقام لحظياً عند أي إضافة في الصيانة أو المالية أو بوابة الزبائن'
-                : 'Updates live whenever Maintenance, Finance, or Customer Portal changes'}
-            </p>
           </div>
 
           <div className="space-y-3 text-xs sm:text-sm">
@@ -481,6 +711,102 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
               <span className="font-mono font-extrabold tabular-nums text-[#0B3B68]">
                 {formatJod(dailySummary.morningCashJod, lang)}
               </span>
+            </div>
+
+            {/* Employee Cash Advances Box directly under Morning Cash */}
+            <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span className="font-extrabold text-rose-900">
+                    {lang === 'ar' ? 'سلف الموظفين (خصم من الكاش)' : 'Employee Cash Advances'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('users')}
+                  className="px-2.5 py-1 rounded-lg bg-white border border-rose-200 hover:bg-rose-100 text-rose-800 text-[11px] font-extrabold transition-colors cursor-pointer"
+                >
+                  {lang === 'ar' ? 'تسجيل / إدارة السلف' : 'Manage Advances'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between pt-1 border-t border-rose-200/70">
+                <span className="text-xs font-bold text-rose-800">
+                  {lang === 'ar' ? 'سلف الموظفين المسجلة اليوم' : "Today's Employee Advances"}
+                </span>
+                <span className="font-mono font-extrabold tabular-nums text-rose-600">
+                  -{formatJod(todayCashAdvancesJod, lang)}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-600">
+                  {lang === 'ar' ? 'إجمالي سلف الموظفين المسجلة' : 'Total Recorded Advances'}
+                </span>
+                <span className="font-mono font-extrabold tabular-nums text-rose-700">
+                  -{formatJod(totalCashAdvancesJod, lang)}
+                </span>
+              </div>
+
+              {cashAdvances.length > 0 ? (
+                <div className="pt-2 border-t border-rose-200/70 space-y-1.5">
+                  {cashAdvances.slice(0, 4).map((adv) => (
+                    <div
+                      key={adv.id}
+                      className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white/90 border border-rose-100 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <span className="font-extrabold text-slate-900">
+                          {adv.userFullName}
+                        </span>
+                        <span className="text-slate-500 mx-1">·</span>
+                        <span className="text-slate-600 truncate">
+                          {adv.note || adv.date}
+                        </span>
+                      </div>
+                      <span className="font-mono font-extrabold tabular-nums text-rose-600 shrink-0">
+                        -{formatJod(adv.amountJod, lang)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[11px] font-bold text-slate-500 pt-1">
+                  {lang === 'ar'
+                    ? 'لا توجد سلف موظفين مسجلة حالياً.'
+                    : 'No employee cash advances recorded yet.'}
+                </div>
+              )}
+            </div>
+
+            {/* Dedicated CliQ Customer Account Row in Digest */}
+            <div className="p-3.5 rounded-xl bg-indigo-50/80 border border-indigo-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-indigo-600 shrink-0" />
+                <div>
+                  <span className="font-extrabold text-indigo-950 block text-xs">
+                    {lang === 'ar' ? 'حساب الزبون كلك (مفصول عن الكاش)' : 'CliQ Customer Account'}
+                  </span>
+                  <span className="text-[10px] text-indigo-800/80 block font-bold">
+                    {lang === 'ar'
+                      ? `إجمالي الرصيد: ${formatJod(cliqMetrics.totalBalanceJod, lang)}`
+                      : `Total: ${formatJod(cliqMetrics.totalBalanceJod, lang)}`}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono font-extrabold tabular-nums text-indigo-700">
+                  +{formatJod(cliqMetrics.todayBalanceJod, lang)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsCliqModalOpen(true)}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-900 hover:bg-indigo-950 text-white text-[11px] font-black cursor-pointer shadow-2xs transition-colors"
+                >
+                  {lang === 'ar' ? 'عرض القائمة' : 'View'}
+                </button>
+              </div>
             </div>
 
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
@@ -505,66 +831,28 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
               </span>
             </div>
 
+            <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-center justify-between">
+              <span className="font-extrabold text-[#145A32]">
+                {lang === 'ar'
+                  ? 'صافي أرباح اليوم (المقبوضات - المصاريف)'
+                  : "Today's Net Profit"}
+              </span>
+              <span className="font-mono font-extrabold tabular-nums text-[#1E824C]">
+                {dailySummary.netProfitJod >= 0 ? '+' : ''}
+                {formatJod(dailySummary.netProfitJod, lang)}
+              </span>
+            </div>
+
             <div className="p-3.5 rounded-xl bg-sky-50/70 border border-sky-200 flex items-center justify-between">
               <span className="font-extrabold text-[#0B3B68]">
                 {lang === 'ar'
-                  ? 'صافي إيرادات الأسبوع الحالي'
-                  : 'Current Week Net Profit'}
+                  ? 'صافي الكاش الفعلي في الدرج (بعد السلف والمصاريف)'
+                  : 'Net Cash Drawer (After Advances & Expenses)'}
               </span>
               <span className="font-mono font-extrabold tabular-nums text-[#0B3B68]">
-                {formatJod(weeklySummary.netProfitJod, lang)}
+                {formatJod(dailySummary.netCashDrawerJod, lang)}
               </span>
             </div>
-          </div>
-
-          {/* Today's Visits Quick List */}
-          <div className="pt-2 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-extrabold text-slate-700">
-                {lang === 'ar'
-                  ? `زيارات ومواعيد اليوم (${todayVisits.length})`
-                  : `Today's Visits (${todayVisits.length})`}
-              </h4>
-              <button
-                type="button"
-                onClick={() => onNavigate('maintenance')}
-                className="text-xs font-bold text-[#155E95] hover:underline cursor-pointer"
-              >
-                {lang === 'ar' ? 'عرض الكل' : 'View All'}
-              </button>
-            </div>
-
-            {todayVisits.map((v) => (
-              <div
-                key={v.id}
-                className="p-3 rounded-xl border border-slate-200 bg-white flex items-center justify-between gap-2"
-              >
-                <div>
-                  <div className="text-xs font-extrabold text-[#0B3B68]">
-                    {v.customerName}
-                  </div>
-                  <div className="text-[11px] text-slate-600">{v.problem}</div>
-                </div>
-                <div className="text-end shrink-0">
-                  <div className="text-xs font-mono font-bold tabular-nums text-slate-900">
-                    {formatJod(v.amountJod, lang)}
-                  </div>
-                  <div
-                    className={`text-[10px] font-bold ${
-                      v.isResolved ? 'text-[#1E824C]' : 'text-[#E58E26]'
-                    }`}
-                  >
-                    {v.isResolved
-                      ? lang === 'ar'
-                        ? 'تم الحل'
-                        : 'Resolved'
-                      : lang === 'ar'
-                      ? 'قيد المتابعة'
-                      : 'Pending'}
-                  </div>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       </div>
@@ -581,6 +869,32 @@ export const DashboardHomeView: React.FC<DashboardHomeViewProps> = ({
             setDeleteTargetNote(null);
           }
         }}
+      />
+
+      {/* Embedded Work Notes OCR Scanner Modal */}
+      <WorkNotesScannerModal
+        lang={lang}
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onInsertNotes={handleScanNotesInsert}
+        currentNotes={noteContent}
+        titleCustom={
+          lang === 'ar'
+            ? 'تصوير ورقة ملاحظات العمل وإدراجها في العمل اليومي'
+            : 'Scan Work Notes Sheet to Daily Log'
+        }
+      />
+
+      {/* CliQ Customer Account Modal */}
+      <CliqAccountModal
+        isOpen={isCliqModalOpen}
+        onClose={() => setIsCliqModalOpen(false)}
+        lang={lang}
+        state={state}
+        onSaveVisit={onSaveVisit}
+        onDeleteVisit={onDeleteVisit}
+        currentUserFullName={currentUserFullName}
+        canDelete={canDelete}
       />
     </div>
   );

@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "SystemState": {
+      "title": "SystemState",
+      "description": "Central synchronized state document for Al-Madar IT Operations",
+      "type": "object",
+      "properties": {
+        "updatedAt": {
+          "type": "number",
+          "description": "Timestamp in milliseconds"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "ID of client updating state"
+        },
+        "state": {
+          "type": "object",
+          "description": "Complete serializable application state"
+        }
+      },
+      "required": ["updatedAt", "state"]
+    },
+    "MaintenanceVisit": {
+      "title": "MaintenanceVisit",
+      "description": "Maintenance visit record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "phone": { "type": "string" },
+        "visitDate": { "type": "string" },
+        "visitTime": { "type": "string" },
+        "problem": { "type": "string" },
+        "visitType": { "type": "string" },
+        "isPaid": { "type": "boolean" },
+        "isResolved": { "type": "boolean" },
+        "status": { "type": "string" },
+        "technicianName": { "type": "string" }
+      },
+      "required": ["id", "customerName", "visitDate", "problem"]
+    },
+    "PurchaseRecord": {
+      "title": "PurchaseRecord",
+      "description": "Spare parts purchase and invoice record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "partName": { "type": "string" },
+        "category": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unitCostJod": { "type": "number" },
+        "totalCostJod": { "type": "number" },
+        "paymentMethod": { "type": "string" },
+        "invoiceDate": { "type": "string" }
+      },
+      "required": ["id", "partName", "quantity", "unitCostJod", "totalCostJod", "paymentMethod", "invoiceDate"]
+    }
+  },
+  "firestore": {
+    "/system/{docId}": {
+      "schema": "SystemState",
+      "description": "Central live synchronization state document across all devices"
+    },
+    "/visits/{visitId}": {
+      "schema": "MaintenanceVisit",
+      "description": "Maintenance visit documents"
+    },
+    "/purchases/{purchaseId}": {
+      "schema": "PurchaseRecord",
+      "description": "Purchase documents"
+    }
+  }
+}

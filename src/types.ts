@@ -1,6 +1,6 @@
 export type Language = 'ar' | 'en';
 
-export type UserRole = 'manager' | 'technician';
+export type UserRole = 'manager' | 'technician' | 'admin';
 
 export interface User {
   id: string;
@@ -11,6 +11,15 @@ export interface User {
   phone?: string;
   active: boolean;
   createdAt: string;
+}
+
+export function isUserAdmin(user: User | null | undefined): boolean {
+  if (!user) return false;
+  return (
+    user.role === 'manager' ||
+    user.role === 'admin' ||
+    user.username?.toLowerCase() === 'admin'
+  );
 }
 
 export type ContractType = 'annual' | 'monthly' | 'on_demand';
@@ -27,6 +36,31 @@ export interface Customer {
   createdAt: string;
 }
 
+export type PurchasePaymentMethod = 'cash' | 'cliq' | 'credit';
+
+export interface PurchaseRecord {
+  id: string;
+  partName: string;
+  category: string;
+  quantity: number;
+  unit: string; // 'قطعة' | 'متر' | 'علبة' | 'حبة'
+  unitCostJod: number;
+  totalCostJod: number;
+  sellingPriceJod?: number;
+  supplierName?: string;
+  invoiceNumber?: string;
+  invoiceDate: string; // YYYY-MM-DD
+  paymentMethod: PurchasePaymentMethod; // 'cash' (كاش) | 'cliq' (كلك) | 'credit' (ذمم)
+  isPaid: boolean;
+  paidAt?: string;
+  notes?: string;
+  purchasedBy?: string;
+  invoiceImageUrl?: string;
+  linkedExpenseId?: string;
+  linkedPartId?: string;
+  createdAt: string;
+}
+
 export interface PartItem {
   id: string;
   name: string;
@@ -34,7 +68,14 @@ export interface PartItem {
   defaultCostJod: number;
   defaultPriceJod: number;
   stockQty: number;
+  unit?: string;
+  supplierName?: string;
+  invoiceNumber?: string;
+  purchaseDate?: string;
+  paymentMethod?: PurchasePaymentMethod;
   notes?: string;
+  invoiceImageUrl?: string;
+  linkedPurchaseId?: string;
 }
 
 export type ExpenseCategory = 'fuel' | 'car_repair' | 'parts_purchase' | 'other';
@@ -50,6 +91,8 @@ export interface ExpenseTemplate {
 
 export type PaymentMethod = 'cash' | 'check' | 'cliq';
 
+export type MaintenanceStatus = 'pending' | 'in_progress' | 'resolved';
+
 export interface MaintenanceVisit {
   id: string;
   customerId?: string;
@@ -63,13 +106,24 @@ export interface MaintenanceVisit {
   visitTime: string; // HH:mm
   nextVisitDate?: string; // YYYY-MM-DD
   isPaid: boolean;
+  noPayment?: boolean;
   amountJod: number;
   paymentMethod: PaymentMethod;
+  status?: MaintenanceStatus; // 'pending' (قيد الانتظار) | 'in_progress' (جاري العمل) | 'resolved' (منتهية)
   isResolved: boolean;
   note?: string;
   source: 'staff' | 'customer_portal';
   technicianName?: string;
   createdAt: string;
+  isArchived?: boolean;
+  archivedAt?: string;
+  autoArchiveExcluded?: boolean;
+  autoArchiveExcludedDate?: string;
+  isFinanceArchived?: boolean;
+  financeArchivedAt?: string;
+  financeAutoArchiveExcluded?: boolean;
+  financeAutoArchiveExcludedDate?: string;
+  profitTransferredToMorningCash?: boolean;
 }
 
 export interface MorningCashRecord {
@@ -78,6 +132,10 @@ export interface MorningCashRecord {
   amountJod: number;
   note?: string;
   recordedBy: string;
+  isArchived?: boolean;
+  archivedAt?: string;
+  autoArchiveExcluded?: boolean;
+  autoArchiveExcludedDate?: string;
 }
 
 export interface ExpenseRecord {
@@ -91,6 +149,28 @@ export interface ExpenseRecord {
   paymentMethod: PaymentMethod;
   note?: string;
   recordedBy: string;
+  isArchived?: boolean;
+  archivedAt?: string;
+  autoArchiveExcluded?: boolean;
+  autoArchiveExcludedDate?: string;
+  linkedPurchaseId?: string;
+  linkedCashAdvanceId?: string;
+  profitTransferredToMorningCash?: boolean;
+}
+
+export interface CashAdvanceRecord {
+  id: string;
+  userId: string;
+  userFullName: string;
+  username: string;
+  amountJod: number;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:mm
+  note?: string;
+  recordedBy: string;
+  linkedExpenseId?: string;
+  createdAt: string;
+  updatedAt?: number;
 }
 
 export interface ScheduleAppointment {
@@ -104,6 +184,7 @@ export interface ScheduleAppointment {
   linkedVisitId?: string;
   status: 'scheduled' | 'completed' | 'cancelled';
   note?: string;
+  reminderSent30Min?: boolean;
 }
 
 export interface DailyNote {
@@ -126,7 +207,7 @@ export interface AppNotification {
   visitDate: string;
   visitTime: string;
   linkedVisitId: string;
-  source?: 'customer_portal' | 'staff';
+  source?: 'customer_portal' | 'staff' | 'calendar_reminder';
   isRead: boolean;
   createdAt: string;
 }
@@ -135,6 +216,9 @@ export interface AppState {
   users: User[];
   customers: Customer[];
   parts: PartItem[];
+  purchases?: PurchaseRecord[];
+  suppliers?: string[];
+  cashAdvances?: CashAdvanceRecord[];
   expenseTemplates: ExpenseTemplate[];
   visits: MaintenanceVisit[];
   morningCash: MorningCashRecord[];

@@ -18,7 +18,7 @@ import {
   getTodayStr,
   isDateInRange,
 } from '../utils/logic';
-import { AlMadarLogo } from './AlMadarLogo';
+import { FinancialReportPdfModal } from './FinancialReportPdfModal';
 
 interface StatisticsExportViewProps {
   lang: Language;
@@ -115,19 +115,19 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Controls & Export Bar */}
-      <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5 no-print">
+      <div className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6 shadow-sm space-y-5 no-print">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex items-start sm:items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-[#0B3B68] text-white flex items-center justify-center shrink-0">
               <BarChart3 className="w-5 h-5" />
             </div>
-            <div>
-              <h2 className="text-lg sm:text-xl font-extrabold text-[#0B3B68]">
+            <div className="space-y-0.5">
+              <h2 className="text-base sm:text-xl font-extrabold text-[#0B3B68] leading-snug break-words">
                 {lang === 'ar'
                   ? 'شاشة الإحصاءات والجدول التفصيلي وتصدير التقارير'
                   : 'Statistics, Detailed Table & Report Exports'}
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-600 leading-relaxed break-words">
                 {lang === 'ar'
                   ? `${periodLabel} (${summary.startDate} إلى ${summary.endDate})`
                   : `${periodLabel} (${summary.startDate} to ${summary.endDate})`}
@@ -135,15 +135,15 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
             </div>
           </div>
 
-          {/* Export Buttons: Excel + PDF */}
-          <div className="flex flex-wrap items-center gap-2.5">
+          {/* Export Buttons: Excel + PDF — Full width on mobile so all text appears completely */}
+          <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2.5 w-full lg:w-auto">
             <button
               type="button"
               onClick={handleExportExcel}
-              className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#1E824C] hover:bg-[#145A32] text-white text-xs sm:text-sm font-bold flex items-center gap-2 shadow-sm transition-colors cursor-pointer"
+              className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 rounded-xl bg-[#1E824C] hover:bg-[#145A32] text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer text-center leading-snug"
             >
               <FileSpreadsheet className="w-4 h-4 shrink-0" />
-              <span>
+              <span className="break-words">
                 {lang === 'ar'
                   ? 'تصدير ملخص العمل والمالية (Excel)'
                   : 'Export Summary (Excel)'}
@@ -153,10 +153,10 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
             <button
               type="button"
               onClick={handleOpenPdfReport}
-              className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#0B3B68] hover:bg-[#155E95] text-white text-xs sm:text-sm font-bold flex items-center gap-2 shadow-sm transition-colors cursor-pointer"
+              className="w-full sm:w-auto min-h-[44px] px-4 py-2.5 rounded-xl bg-[#0B3B68] hover:bg-[#155E95] text-white text-xs sm:text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer text-center leading-snug"
             >
               <FileText className="w-4 h-4 shrink-0" />
-              <span>
+              <span className="break-words">
                 {lang === 'ar'
                   ? 'تصدير ومعاينة التقرير الرسمي (PDF / طباعة)'
                   : 'Export & Preview Official PDF Report'}
@@ -170,51 +170,52 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
             role="status"
             className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs sm:text-sm font-bold flex items-center gap-2"
           >
-            <CheckCircle2 className="w-4 h-4 text-[#1E824C]" />
-            <span>{exportNotice}</span>
+            <CheckCircle2 className="w-4 h-4 text-[#1E824C] shrink-0" />
+            <span className="break-words">{exportNotice}</span>
           </div>
         )}
 
-        {/* Period Filter Row */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-100">
-          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
-            {(
-              [
-                { id: 'daily', ar: 'يومي', en: 'Daily' },
-                { id: 'weekly', ar: 'أسبوعي', en: 'Weekly' },
-                { id: 'monthly', ar: 'شهري', en: 'Monthly' },
-                { id: 'all', ar: 'الكل', en: 'All Time' },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setPeriod(tab.id)}
-                className={`min-h-[40px] px-4 py-1.5 text-xs sm:text-sm font-bold rounded-lg transition-colors cursor-pointer ${
-                  period === tab.id
-                    ? 'bg-[#0B3B68] text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                {lang === 'ar' ? tab.ar : tab.en}
-              </button>
-            ))}
+        {/* Direct PDF Export Bar — تصدير التقارير المالية فقط */}
+        <div className="pt-4 border-t border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs sm:text-sm font-extrabold text-[#0B3B68]">
+            <Printer className="w-4 h-4 text-[#1E824C] shrink-0" />
+            <span className="break-words">
+              {lang === 'ar'
+                ? 'تصدير التقارير المالية بصيغة PDF (يومي، أسبوعي، شهري، وشامل كامل):'
+                : 'Export Financial Reports as PDF (Daily, Weekly, Monthly, Complete All):'}
+            </span>
           </div>
 
-          <div className="flex items-center gap-2">
-            <label
-              htmlFor="stats-ref-date"
-              className="text-xs font-bold text-slate-600"
-            >
-              {lang === 'ar' ? 'التاريخ المرجعي:' : 'Reference Date:'}
-            </label>
-            <input
-              id="stats-ref-date"
-              type="date"
-              value={referenceDate}
-              onChange={(e) => setReferenceDate(e.target.value)}
-              className="min-h-[42px] px-3 py-1.5 rounded-xl border border-slate-300 font-mono text-xs sm:text-sm tabular-nums"
-            />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full lg:w-auto">
+            {(
+              [
+                { id: 'daily', ar: 'تصدير اليومي PDF', en: 'Daily PDF' },
+                { id: 'weekly', ar: 'تصدير الأسبوعي PDF', en: 'Weekly PDF' },
+                { id: 'monthly', ar: 'تصدير الشهري PDF', en: 'Monthly PDF' },
+                { id: 'all', ar: 'تصدير الشامل الكامل PDF', en: 'Complete All PDF' },
+              ] as const
+            ).map((btn) => (
+              <button
+                key={btn.id}
+                type="button"
+                onClick={() => {
+                  setPeriod(btn.id);
+                  setShowPdfPreview(true);
+                }}
+                className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer text-center leading-snug break-words shadow-2xs ${
+                  btn.id === 'all'
+                    ? 'bg-[#0B3B68] hover:bg-[#155E95] text-white'
+                    : 'bg-emerald-50 hover:bg-emerald-100 text-[#145A32] border border-emerald-200'
+                }`}
+              >
+                <FileText
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    btn.id === 'all' ? 'text-amber-300' : 'text-[#1E824C]'
+                  }`}
+                />
+                <span>{lang === 'ar' ? btn.ar : btn.en}</span>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -231,7 +232,7 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
                 : 'Search detailed tables (customer, problem, installed parts, expense, date)...'
             }
             aria-label={lang === 'ar' ? 'بحث في الإحصاءات' : 'Search statistics'}
-            className="w-full min-h-[46px] ps-10 pe-4 py-2 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0B3B68]"
+            className="w-full min-h-[46px] ps-10 pe-4 py-2 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0B3B68]"
           />
         </div>
       </div>
@@ -364,22 +365,32 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
                     <td className="py-3 px-3">
                       <span
                         className={
-                          v.isResolved
+                          v.isResolved || v.status === 'resolved'
                             ? 'font-bold text-[#1E824C]'
+                            : v.status === 'in_progress'
+                            ? 'font-bold text-[#0B3B68]'
                             : 'font-bold text-[#E58E26]'
                         }
                       >
-                        {v.isResolved
+                        {v.isResolved || v.status === 'resolved'
                           ? lang === 'ar'
                             ? 'تم الحل'
                             : 'Resolved'
+                          : v.status === 'in_progress'
+                          ? lang === 'ar'
+                            ? 'جاري العمل'
+                            : 'In Progress'
                           : lang === 'ar'
-                          ? 'قيد المتابعة'
+                          ? 'قيد الانتظار'
                           : 'Pending'}
                       </span>
                     </td>
                     <td className="py-3 px-3">
-                      {v.isPaid
+                      {v.visitType === 'contract'
+                        ? lang === 'ar'
+                          ? 'عقد دوري (غير مدفوع)'
+                          : 'Contract (Unpaid)'
+                        : v.isPaid
                         ? v.paymentMethod === 'cash'
                           ? lang === 'ar'
                             ? 'مدفوع · كاش'
@@ -396,7 +407,11 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
                         : 'Unpaid'}
                     </td>
                     <td className="py-3 px-3 text-end font-mono font-bold tabular-nums text-slate-900 whitespace-nowrap">
-                      {formatJod(v.amountJod, lang)}
+                      {v.visitType === 'contract'
+                        ? lang === 'ar'
+                          ? 'عقد صيانة'
+                          : 'Contract'
+                        : formatJod(v.amountJod, lang)}
                     </td>
                   </tr>
                 ))
@@ -486,151 +501,16 @@ export const StatisticsExportView: React.FC<StatisticsExportViewProps> = ({
         </div>
       </div>
 
-      {/* Printable / PDF Official Report Modal */}
-      {showPdfPreview && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm p-4 overflow-y-auto"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="pdf-report-title"
-        >
-          <div className="w-full max-w-4xl rounded-2xl bg-white p-6 sm:p-8 shadow-2xl border border-slate-200 my-8 space-y-6">
-            {/* Modal Action Bar (Hidden when printing) */}
-            <div className="flex items-center justify-between pb-4 border-b border-slate-200 no-print">
-              <div className="text-sm font-bold text-slate-700">
-                {lang === 'ar'
-                  ? 'معاينة التقرير المنسق الرسمي (جاهز للطباعة أو الحفظ كملف PDF)'
-                  : 'Official Formatted Report Preview (Ready to Print / Save as PDF)'}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="min-h-[42px] px-4 py-2 rounded-xl bg-[#0B3B68] hover:bg-[#155E95] text-white text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>{lang === 'ar' ? 'طباعة / حفظ PDF الآن' : 'Print / Save PDF'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleExportExcel}
-                  className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#1E824C] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Excel</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowPdfPreview(false)}
-                  aria-label={lang === 'ar' ? 'إغلاق المعاينة' : 'Close preview'}
-                  className="min-h-[42px] min-w-[42px] rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 flex items-center justify-center cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Official Report Header with Al-Madar Logo */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b-2 border-[#0B3B68]">
-              <AlMadarLogo size="lg" />
-              <div className="text-start sm:text-end space-y-1">
-                <h3
-                  id="pdf-report-title"
-                  className="text-lg font-extrabold text-[#0B3B68]"
-                >
-                  {periodLabel}
-                </h3>
-                <p className="text-xs font-mono tabular-nums text-slate-600">
-                  {lang === 'ar'
-                    ? `الفترة: ${summary.startDate} إلى ${summary.endDate}`
-                    : `Period: ${summary.startDate} to ${summary.endDate}`}
-                </p>
-                <p className="text-xs font-bold text-[#1E824C]">
-                  {lang === 'ar'
-                    ? 'العملة المعتمدة: دينار أردني (JOD)'
-                    : 'Currency: Jordanian Dinar (JOD)'}
-                </p>
-              </div>
-            </div>
-
-            {/* Financial Summary Box */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-                <div className="text-xs text-slate-500">
-                  {lang === 'ar' ? 'كاش الصباح' : 'Morning Cash'}
-                </div>
-                <div className="text-lg font-mono font-extrabold tabular-nums text-[#0B3B68] mt-1">
-                  {formatJod(summary.morningCashJod, lang)}
-                </div>
-              </div>
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-                <div className="text-xs text-slate-500">
-                  {lang === 'ar' ? 'مقبوضات الصيانة' : 'Maintenance Revenue'}
-                </div>
-                <div className="text-lg font-mono font-extrabold tabular-nums text-[#1E824C] mt-1">
-                  {formatJod(summary.totalRevenueJod, lang)}
-                </div>
-              </div>
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-                <div className="text-xs text-slate-500">
-                  {lang === 'ar' ? 'إجمالي المصاريف' : 'Total Expenses'}
-                </div>
-                <div className="text-lg font-mono font-extrabold tabular-nums text-rose-600 mt-1">
-                  {formatJod(summary.totalExpensesJod, lang)}
-                </div>
-              </div>
-              <div className="p-3.5 rounded-xl bg-slate-100 border border-slate-300">
-                <div className="text-xs font-bold text-slate-700">
-                  {lang === 'ar' ? 'صافي الكاش بالصندوق' : 'Net Drawer Cash'}
-                </div>
-                <div className="text-lg font-mono font-extrabold tabular-nums text-[#0B3B68] mt-1">
-                  {formatJod(summary.netCashDrawerJod, lang)}
-                </div>
-              </div>
-            </div>
-
-            {/* Compact Printable Maintenance Summary */}
-            <div className="space-y-2">
-              <h4 className="text-sm font-extrabold text-[#0B3B68]">
-                {lang === 'ar'
-                  ? `ملخص زيارات الصيانة (${periodVisits.length})`
-                  : `Maintenance Visits Summary (${periodVisits.length})`}
-              </h4>
-              <table className="w-full text-xs border border-slate-200">
-                <thead>
-                  <tr className="bg-slate-100 border-b border-slate-200">
-                    <th className="p-2 text-start">{lang === 'ar' ? 'التاريخ' : 'Date'}</th>
-                    <th className="p-2 text-start">{lang === 'ar' ? 'الزبون' : 'Customer'}</th>
-                    <th className="p-2 text-start">{lang === 'ar' ? 'المشكلة والقطع' : 'Issue & Parts'}</th>
-                    <th className="p-2 text-start">{lang === 'ar' ? 'الدفع' : 'Payment'}</th>
-                    <th className="p-2 text-end">{lang === 'ar' ? 'المبلغ' : 'Amount'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {periodVisits.map((v) => (
-                    <tr key={v.id}>
-                      <td className="p-2 font-mono tabular-nums">{v.visitDate}</td>
-                      <td className="p-2 font-bold">{v.customerName}</td>
-                      <td className="p-2">
-                        {v.problem}
-                        {v.installedParts.length > 0
-                          ? ` (${v.installedParts.join(' + ')})`
-                          : ''}
-                      </td>
-                      <td className="p-2">
-                        {v.isPaid ? (lang === 'ar' ? 'مدفوع' : 'Paid') : lang === 'ar' ? 'ذمم' : 'Unpaid'}
-                      </td>
-                      <td className="p-2 text-end font-mono font-bold tabular-nums">
-                        {formatJod(v.amountJod, lang)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Complete Printable / PDF Official Report Modal */}
+      <FinancialReportPdfModal
+        isOpen={showPdfPreview}
+        onClose={() => setShowPdfPreview(false)}
+        lang={lang}
+        state={state}
+        initialPeriod={period}
+        initialReferenceDate={referenceDate}
+        initialScope="all_combined"
+      />
     </div>
   );
 };

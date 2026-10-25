@@ -4,7 +4,7 @@ import type { Language } from '../types';
 import { addDaysStr, getTodayStr } from '../utils/logic';
 
 interface TouchDatePickerProps {
-  label: string;
+  label?: string;
   value: string;
   onChange: (dateStr: string) => void;
   lang: Language;
@@ -92,8 +92,8 @@ export const TouchDatePicker: React.FC<TouchDatePickerProps> = ({
   );
 
   return (
-    <div className="space-y-3">
-      {/* Header Row with Selected Day & Date Preview */}
+    <div className="space-y-2">
+      {/* Header Row with Label & Selected Day & Date Preview */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <label
           htmlFor={id}
@@ -134,85 +134,8 @@ export const TouchDatePicker: React.FC<TouchDatePickerProps> = ({
         </div>
       </div>
 
-      {/* Quick 1-Tap Date Cards with Separated Day Name & LTR Date */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        {quickButtons.map((btn) => {
-          const active = value === btn.date;
-          return (
-            <button
-              key={btn.date + btn.label}
-              type="button"
-              onClick={() => onChange(btn.date)}
-              className={`min-h-[62px] px-3 py-2.5 rounded-xl border transition-all flex flex-col items-center justify-center gap-1 cursor-pointer ${
-                active
-                  ? 'bg-[#0B3B68] text-white border-[#0B3B68] shadow-sm'
-                  : 'bg-white text-slate-800 border-slate-200 hover:border-[#0B3B68]/50 hover:bg-slate-50'
-              }`}
-            >
-              <span className="text-xs font-extrabold whitespace-nowrap">
-                {btn.label}
-              </span>
-              <span
-                className={`text-[11px] font-bold ${
-                  active ? 'text-amber-300' : 'text-[#0B3B68]'
-                }`}
-              >
-                {getWeekdayLabel(btn.date, lang)}
-              </span>
-              <span
-                dir="ltr"
-                className={`text-[11px] font-mono font-bold tabular-nums ${
-                  active ? 'text-sky-100' : 'text-slate-500'
-                }`}
-              >
-                {btn.date}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* 7-Day Interactive Strip (Full Width) */}
-      {mode === 'visit' && (
-        <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
-          {upcomingDays.map((dStr) => {
-            const isSelected = value === dStr;
-            const monthDay = dStr.slice(5);
-            return (
-              <button
-                key={dStr}
-                type="button"
-                onClick={() => onChange(dStr)}
-                className={`min-h-[54px] py-2 px-2 rounded-xl border text-center transition-colors flex flex-col items-center justify-center gap-1 cursor-pointer ${
-                  isSelected
-                    ? 'bg-[#1E824C] text-white border-[#1E824C] shadow-xs'
-                    : 'bg-white text-slate-700 border-slate-200 hover:border-[#1E824C]/50 hover:bg-slate-50'
-                }`}
-              >
-                <span className="text-xs font-extrabold whitespace-nowrap">
-                  {getWeekdayLabel(dStr, lang)}
-                </span>
-                <span
-                  dir="ltr"
-                  className={`text-[11px] font-mono font-bold tabular-nums ${
-                    isSelected ? 'text-emerald-100' : 'text-slate-500'
-                  }`}
-                >
-                  {monthDay}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Custom Calendar Date Input */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
-        <span className="text-xs font-semibold text-slate-600">
-          {lang === 'ar'
-            ? 'أو اختر التاريخ من التقويم:'
-            : 'Or pick a date from calendar:'}
-        </span>
+      {/* Calendar Date Input Only */}
+      <div>
         <input
           id={id}
           type="date"
@@ -220,7 +143,7 @@ export const TouchDatePicker: React.FC<TouchDatePickerProps> = ({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           aria-label={label}
-          className="min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-slate-900 font-mono text-sm font-bold tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0B3B68] sm:w-52"
+          className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-slate-900 font-mono text-sm font-bold tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0B3B68]"
         />
       </div>
     </div>

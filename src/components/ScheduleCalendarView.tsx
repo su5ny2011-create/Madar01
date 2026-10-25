@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import {
+  Bell,
   Calendar,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -9,6 +11,7 @@ import {
   Phone,
   Plus,
   Search,
+  Smartphone,
   Trash2,
   X,
 } from 'lucide-react';
@@ -16,6 +19,11 @@ import type { Customer, Language, ScheduleAppointment } from '../types';
 import { addDaysStr, getDayName, getTodayStr, getWeekDays } from '../utils/logic';
 import { TouchDatePicker, TouchTimePicker } from './TouchDateTimePicker';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
+import {
+  getNotificationPermissionStatus,
+  requestMobileNotificationPermission,
+  sendPwaNotification,
+} from '../utils/pwaNotifications';
 
 interface ScheduleCalendarViewProps {
   lang: Language;
@@ -23,6 +31,7 @@ interface ScheduleCalendarViewProps {
   customers: Customer[];
   onSaveAppointment: (apt: ScheduleAppointment) => void;
   onDeleteAppointment: (id: string) => void;
+  canDelete?: boolean;
 }
 
 export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
@@ -31,6 +40,7 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
   customers,
   onSaveAppointment,
   onDeleteAppointment,
+  canDelete = true,
 }) => {
   const [weekRefDate, setWeekRefDate] = useState(getTodayStr());
   const [selectedDayFilter, setSelectedDayFilter] = useState<string>('all');
@@ -55,6 +65,8 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
   const [inlineTitle, setInlineTitle] = useState('');
   const [inlineTime, setInlineTime] = useState('10:30');
   const [inlineNote, setInlineNote] = useState('');
+  const [notifPerm, setNotifPerm] = useState(getNotificationPermissionStatus());
+  const [notifBanner, setNotifBanner] = useState('');
 
   const weekDays = getWeekDays(weekRefDate);
   const todayStr = getTodayStr();
@@ -163,6 +175,71 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* 30-Minute PWA & Mobile Notification Reminder Activation Bar */}
+      <div className="rounded-2xl bg-white border-2 border-[#0B3B68]/20 p-4 sm:p-5 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start sm:items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-amber-50 border border-amber-200 text-[#E58E26] flex items-center justify-center shrink-0">
+            <Bell className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-sm sm:text-base font-extrabold text-[#0B3B68]">
+              {lang === 'ar'
+                ? 'تنبيهات المواعيد التلقائية قبل 30 دقيقة'
+                : 'Automatic 30-Minute Appointment Reminders'}
+            </h3>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={async () => {
+              const perm = await requestMobileNotificationPermission();
+              setNotifPerm(perm);
+              await sendPwaNotification({
+                title:
+                  lang === 'ar'
+                    ? 'شركة المدار — تفعيل تنبيهات قبل 30 دقيقة'
+                    : 'Al-Madar IT — 30-Min Reminders Active',
+                body:
+                  lang === 'ar'
+                    ? 'تم تفعيل إشعارات الهاتف والمتصفح (PWA) قبل 30 دقيقة من مواعيد الصيانة بنجاح!'
+                    : 'PWA & Mobile notifications 30 minutes before scheduled maintenance are now active!',
+                tag: 'almadar-cal-enable',
+              });
+              setNotifBanner(
+                lang === 'ar'
+                  ? 'تم تفعيل إشعارات الهاتف والمتصفح (PWA) لتنبيهك قبل 30 دقيقة من أي موعد صيانة!'
+                  : 'Mobile & PWA 30-minute calendar notifications enabled!'
+              );
+              setTimeout(() => setNotifBanner(''), 4500);
+            }}
+            className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#1E824C] hover:bg-[#145A32] text-white text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 shadow-2xs transition-colors cursor-pointer"
+          >
+            <Smartphone className="w-4 h-4 shrink-0" />
+            <span>
+              {notifPerm === 'granted'
+                ? lang === 'ar'
+                  ? 'إشعارات الهاتف مفعّلة ✓ (اضغط للتجربة)'
+                  : 'Phone Alerts Active ✓ (Tap to Test)'
+                : lang === 'ar'
+                ? 'تفعيل الإشعارات على الهاتف (PWA)'
+                : 'Enable Phone Notifications (PWA)'}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {notifBanner && (
+        <div
+          role="status"
+          className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs sm:text-sm font-bold flex items-center gap-2.5"
+        >
+          <CheckCircle2 className="w-5 h-5 text-[#1E824C] shrink-0" />
+          <span>{notifBanner}</span>
+        </div>
+      )}
+
       {/* Spacious Appointment Entry Form */}
       <form
         onSubmit={handleSubmit}
@@ -180,14 +257,9 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
                     ? 'تعديل موعد في الجدول الأسبوعي'
                     : 'Edit Weekly Appointment'
                   : lang === 'ar'
-                  ? 'جدول المواعيد الأسبوعي — تعبئة وإضافة موعد جديد'
-                  : 'Weekly Schedule Calendar — Add New Appointment'}
+                  ? 'إضافة موعد جديد'
+                  : 'Add New Appointment'}
               </h2>
-              <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
-                {lang === 'ar'
-                  ? 'مساحة واسعة لتعبئة المواعيد، مع ترحيل تلقائي لاسم الزبون إلى صفحة الزبائن'
-                  : 'Spacious appointment scheduling with automatic customer sync'}
-              </p>
             </div>
           </div>
 
@@ -386,11 +458,6 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
                 </span>
               </div>
             </div>
-            <p className="text-xs sm:text-sm text-slate-600">
-              {lang === 'ar'
-                ? 'بطاقات أيام واسعة ومميزة لمنع تداخل المواعيد، مع إمكانية تعبئة موعد مباشر داخل أي يوم'
-                : 'Spacious day cards with inline quick appointment entry'}
-            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -734,17 +801,34 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
                                 : 'border-slate-200'
                             }`}
                           >
-                            {/* Top Row: Time Badge + Status Toggle */}
+                            {/* Top Row: Time Badge + 30-Min Reminder Status + Status Toggle */}
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="px-3 py-1 rounded-lg bg-amber-50 border border-amber-200 text-[#0B3B68] inline-flex items-center gap-1.5">
-                                <Clock className="w-3.5 h-3.5 text-[#E58E26]" />
-                                <span
-                                  dir="ltr"
-                                  className="font-mono text-xs sm:text-sm font-extrabold tabular-nums"
-                                >
-                                  {apt.time}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="px-3 py-1 rounded-lg bg-amber-50 border border-amber-200 text-[#0B3B68] inline-flex items-center gap-1.5">
+                                  <Clock className="w-3.5 h-3.5 text-[#E58E26]" />
+                                  <span
+                                    dir="ltr"
+                                    className="font-mono text-xs sm:text-sm font-extrabold tabular-nums"
+                                  >
+                                    {apt.time}
+                                  </span>
                                 </span>
-                              </span>
+
+                                {!isDone && (
+                                  <span className="text-[11px] font-bold text-slate-600 inline-flex items-center gap-1">
+                                    <Bell className="w-3 h-3 text-[#E58E26]" />
+                                    <span>
+                                      {apt.reminderSent30Min
+                                        ? lang === 'ar'
+                                          ? 'تم إرسال تنبيه الـ 30 د ✓'
+                                          : '30m reminder sent ✓'
+                                        : lang === 'ar'
+                                        ? 'تنبيه تلقائي قبل 30 د'
+                                        : 'Auto-alert 30m before'}
+                                    </span>
+                                  </span>
+                                )}
+                              </div>
 
                               <button
                                 type="button"
@@ -818,19 +902,21 @@ export const ScheduleCalendarView: React.FC<ScheduleCalendarViewProps> = ({
                                 <Edit3 className="w-3.5 h-3.5" />
                                 <span>{lang === 'ar' ? 'تعديل' : 'Edit'}</span>
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => setDeleteTarget(apt)}
-                                aria-label={
-                                  lang === 'ar'
-                                    ? `حذف موعد ${apt.customerName}`
-                                    : `Delete appointment ${apt.customerName}`
-                                }
-                                className="min-h-[38px] px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>{lang === 'ar' ? 'حذف' : 'Delete'}</span>
-                              </button>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDeleteTarget(apt)}
+                                  aria-label={
+                                    lang === 'ar'
+                                      ? `حذف موعد ${apt.customerName}`
+                                      : `Delete appointment ${apt.customerName}`
+                                  }
+                                  className="min-h-[38px] px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>{lang === 'ar' ? 'حذف' : 'Delete'}</span>
+                                </button>
+                              )}
                             </div>
                           </div>
                         );

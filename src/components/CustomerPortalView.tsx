@@ -122,11 +122,6 @@ export const CustomerPortalView: React.FC<CustomerPortalViewProps> = ({
                 ? 'شاشة الزبائن — حجز وتسجيل طلب صيانة'
                 : 'Customer Portal — Request Maintenance Visit'}
             </h2>
-            <p className="text-xs sm:text-sm text-slate-600 mt-1">
-              {lang === 'ar'
-                ? 'يتم ترحيل الطلب تلقائياً إلى قسم طلبات الصيانة وجدول المواعيد الأسبوعي وسجل الزبائن.'
-                : 'Automatically transfers to Maintenance Requests, Weekly Schedule, and Customers Directory.'}
-            </p>
           </div>
         </div>
 

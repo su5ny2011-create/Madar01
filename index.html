@@ -3,6 +3,65 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <script>
+      (function () {
+        var NativeWS = window.WebSocket;
+        if (!NativeWS) return;
+        function GuardedWebSocket(url, protocols) {
+          var protoStr = Array.isArray(protocols)
+            ? protocols.join(',')
+            : String(protocols || '');
+          if (protoStr.indexOf('vite-hmr') !== -1 || protoStr.indexOf('vite-ping') !== -1) {
+            var fake = {
+              url: String(url || ''),
+              protocol: protoStr,
+              readyState: 1,
+              binaryType: 'blob',
+              bufferedAmount: 0,
+              extensions: '',
+              onopen: null,
+              onerror: null,
+              onclose: null,
+              onmessage: null,
+              send: function () {},
+              close: function () {
+                this.readyState = 3;
+              },
+              addEventListener: function (type, listener) {
+                if (type === 'open' && typeof listener === 'function') {
+                  setTimeout(function () {
+                    try {
+                      listener(new Event('open'));
+                    } catch (_) {}
+                  }, 0);
+                }
+              },
+              removeEventListener: function () {},
+              dispatchEvent: function () {
+                return true;
+              },
+            };
+            setTimeout(function () {
+              if (typeof fake.onopen === 'function') {
+                try {
+                  fake.onopen(new Event('open'));
+                } catch (_) {}
+              }
+            }, 0);
+            return fake;
+          }
+          return protocols !== undefined
+            ? new NativeWS(url, protocols)
+            : new NativeWS(url);
+        }
+        GuardedWebSocket.prototype = NativeWS.prototype;
+        GuardedWebSocket.CONNECTING = NativeWS.CONNECTING;
+        GuardedWebSocket.OPEN = NativeWS.OPEN;
+        GuardedWebSocket.CLOSING = NativeWS.CLOSING;
+        GuardedWebSocket.CLOSED = NativeWS.CLOSED;
+        window.WebSocket = GuardedWebSocket;
+      })();
+    </script>
     <title>شركة المدار - نظام إدارة الصيانة والمالية | Al-Madar IT</title>
     <meta name="description" content="نظام متكامل لإدارة عقود وزيارات الصيانة، المالية، جدول المواعيد الأسبوعي، وبوابة طلبات الزبائن لشركة المدار لتجارة تكنولوجيا المعلومات (PWA)." />
     <meta property="og:title" content="شركة المدار - نظام إدارة الصيانة والمالية | Al-Madar IT" />
@@ -18,7 +77,7 @@
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet" />
   </head>
   <body class="bg-slate-50 text-slate-900 antialiased selection:bg-[#0B3B68] selection:text-white">
     <div id="root"></div>

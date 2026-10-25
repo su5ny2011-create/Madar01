@@ -1,31 +1,37 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Banknote,
+  Calendar,
   Car,
+  CheckCircle2,
+  Clock,
   Cpu,
   Edit3,
   Fuel,
   Plus,
+  Printer,
   Receipt,
   Search,
+  Sparkles,
   Trash2,
   TrendingDown,
   TrendingUp,
   Wallet,
-  Sparkles,
+  X,
+  ShieldCheck,
+  Smartphone,
 } from 'lucide-react';
 import type {
   AppState,
   ExpenseCategory,
   ExpenseRecord,
-  ExpenseTemplate,
   Language,
+  MaintenanceVisit,
   MorningCashRecord,
-  PartItem,
-  PaymentMethod,
   ReportPeriod,
 } from '../types';
 import {
+  calculateCliqAccountMetrics,
   calculateFinancialSummary,
   formatJod,
   getDayName,
@@ -33,6 +39,9 @@ import {
   isDateInRange,
 } from '../utils/logic';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
+import { EditFinanceRecordModal } from './EditFinanceRecordModal';
+import { FinancialReportPdfModal } from './FinancialReportPdfModal';
+import { CliqAccountModal } from './CliqAccountModal';
 
 interface FinanceViewProps {
   lang: Language;
@@ -42,6 +51,12 @@ interface FinanceViewProps {
   onDeleteMorningCash: (id: string) => void;
   onSaveExpense: (record: ExpenseRecord) => void;
   onDeleteExpense: (id: string) => void;
+  onSaveVisit?: (visit: MaintenanceVisit) => void;
+  onDeleteVisit?: (id: string) => void;
+  onOpenAdvancedFinance?: () => void;
+  onTransferAllActiveFinance?: (options?: { targetDate?: string }) => number;
+  canDelete?: boolean;
+  canTransfer?: boolean;
 }
 
 export const FinanceView: React.FC<FinanceViewProps> = ({
@@ -52,28 +67,31 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   onDeleteMorningCash,
   onSaveExpense,
   onDeleteExpense,
+  onSaveVisit,
+  onDeleteVisit,
+  onOpenAdvancedFinance,
+  onTransferAllActiveFinance,
+  canDelete = true,
+  canTransfer = true,
 }) => {
-  const [period, setPeriod] = useState<ReportPeriod>('daily');
-  const [referenceDate, setReferenceDate] = useState(getTodayStr());
   const [searchQuery, setSearchQuery] = useState('');
+  const [financeBanner, setFinanceBanner] = useState('');
 
-  // Morning Cash Form State
-  const [editingMcId, setEditingMcId] = useState<string | null>(null);
-  const [mcDate, setMcDate] = useState(getTodayStr());
-  const [mcAmount, setMcAmount] = useState('');
-  const [mcNote, setMcNote] = useState('');
+  // Live timer for midnight / end-of-day automatic cash rollover countdown
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
-  // Expense Form State
-  const [editingExpId, setEditingExpId] = useState<string | null>(null);
-  const [expDate, setExpDate] = useState(getTodayStr());
-  const [expTime, setExpTime] = useState('10:00');
-  const [expCategory, setExpCategory] = useState<ExpenseCategory>('fuel');
-  const [expTitle, setExpTitle] = useState('');
-  const [expPartType, setExpPartType] = useState('');
-  const [expAmount, setExpAmount] = useState('');
-  const [expPaymentMethod, setExpPaymentMethod] = useState<PaymentMethod>('cash');
-  const [expNote, setExpNote] = useState('');
-  const [expError, setExpError] = useState('');
+  // Modal State for adding/editing financial entries
+  const [isFinanceModalOpen, setIsFinanceModalOpen] = useState(false);
+  const [financeModalTab, setFinanceModalTab] = useState<'expense' | 'morning_cash'>('expense');
+  const [editingExpense, setEditingExpense] = useState<ExpenseRecord | null>(null);
+  const [editingMorningCash, setEditingMorningCash] = useState<MorningCashRecord | null>(null);
+  const [isPdfReportOpen, setIsPdfReportOpen] = useState(false);
+  const [pdfReportPeriod, setPdfReportPeriod] = useState<ReportPeriod>('daily');
+  const [pdfOpenCalendar, setPdfOpenCalendar] = useState(false);
 
   // Delete Confirmation Modal
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -82,126 +100,107 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
     label: string;
   } | null>(null);
 
-  const summary = calculateFinancialSummary(state, period, referenceDate);
+  const referenceDate = getTodayStr();
+
+  // CliQ Customer Account Metrics (مفصول عن الكاش)
+  const cliqMetrics = useMemo(
+    () => calculateCliqAccountMetrics(state, referenceDate),
+    [state, referenceDate]
+  );
+  const [isCliqModalOpen, setIsCliqModalOpen] = useState(false);
+
+  // Active (unarchived) financial state for Daily Finance screen
+  const activeFinanceState = useMemo(() => ({
+    ...state,
+    morningCash: state.morningCash.filter((m) => !m.isArchived),
+    expenses: state.expenses.filter((e) => !e.isArchived),
+    visits: state.visits.filter((v) => !v.isFinanceArchived),
+  }), [state]);
+
+  const summary = useMemo(
+    () => calculateFinancialSummary(activeFinanceState, 'all', referenceDate),
+    [activeFinanceState, referenceDate]
+  );
+
   const q = searchQuery.trim().toLowerCase();
 
-  const periodExpenses = state.expenses.filter(
-    (e) =>
-      isDateInRange(e.date, summary.startDate, summary.endDate) &&
-      (!q ||
-        e.title.toLowerCase().includes(q) ||
-        (e.partType || '').toLowerCase().includes(q) ||
-        (e.note || '').toLowerCase().includes(q) ||
-        e.date.includes(q))
-  );
-  const periodMorningCash = state.morningCash.filter((m) =>
-    isDateInRange(m.date, summary.startDate, summary.endDate)
-  );
-  const periodPaidVisits = state.visits.filter(
-    (v) =>
-      v.isPaid &&
-      isDateInRange(v.visitDate, summary.startDate, summary.endDate) &&
-      (!q ||
-        v.customerName.toLowerCase().includes(q) ||
-        v.problem.toLowerCase().includes(q) ||
-        v.visitDate.includes(q))
+  // Active counts
+  const allActiveMorningCashCount = activeFinanceState.morningCash.length;
+  const activeExpensesCount = activeFinanceState.expenses.length;
+  const activePaidVisitsCount = activeFinanceState.visits.filter(
+    (v) => v.isPaid && v.visitType !== 'contract'
+  ).length;
+  const totalActiveFinanceCount =
+    allActiveMorningCashCount + activeExpensesCount + activePaidVisitsCount;
+
+  const totalTransferredFinanceCount =
+    state.morningCash.filter((m) => Boolean(m.isArchived)).length +
+    state.expenses.filter((e) => Boolean(e.isArchived)).length +
+    state.visits.filter(
+      (v) => v.isPaid && v.visitType !== 'contract' && Boolean(v.isFinanceArchived)
+    ).length;
+
+  // Filter active lists by search query
+  const activeMorningCashList = useMemo(
+    () =>
+      state.morningCash.filter(
+        (m) =>
+          !m.isArchived &&
+          isDateInRange(m.date, summary.startDate, summary.endDate) &&
+          (!q ||
+            (m.note || '').toLowerCase().includes(q) ||
+            (m.recordedBy || '').toLowerCase().includes(q) ||
+            m.date.includes(q))
+      ),
+    [state.morningCash, summary.startDate, summary.endDate, q]
   );
 
-  const handleMorningCashSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const amt = Math.max(0, Number(mcAmount) || 0);
-    const record: MorningCashRecord = {
-      id: editingMcId || `mc-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-      date: mcDate || getTodayStr(),
-      amountJod: amt,
-      note: mcNote.trim(),
-      recordedBy: currentUserFullName,
+  const periodExpenses = useMemo(
+    () =>
+      state.expenses.filter(
+        (e) =>
+          !e.isArchived &&
+          isDateInRange(e.date, summary.startDate, summary.endDate) &&
+          (!q ||
+            e.title.toLowerCase().includes(q) ||
+            (e.partType || '').toLowerCase().includes(q) ||
+            (e.note || '').toLowerCase().includes(q) ||
+            e.date.includes(q))
+      ),
+    [state.expenses, summary.startDate, summary.endDate, q]
+  );
+
+  const periodPaidVisits = useMemo(
+    () =>
+      state.visits.filter(
+        (v) =>
+          v.isPaid &&
+          v.visitType !== 'contract' &&
+          !v.isFinanceArchived &&
+          isDateInRange(v.visitDate, summary.startDate, summary.endDate) &&
+          (!q ||
+            v.customerName.toLowerCase().includes(q) ||
+            v.problem.toLowerCase().includes(q) ||
+            v.visitDate.includes(q))
+      ),
+    [state.visits, summary.startDate, summary.endDate, q]
+  );
+
+  // End of Day Countdown Calculation
+  const endOfDayCountdown = useMemo(() => {
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    const diffMs = Math.max(0, midnight.getTime() - now.getTime());
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+    return {
+      hours: String(hours).padStart(2, '0'),
+      minutes: String(minutes).padStart(2, '0'),
+      seconds: String(seconds).padStart(2, '0'),
+      totalMinutes: Math.floor(diffMs / (1000 * 60)),
     };
-    onSaveMorningCash(record);
-    setEditingMcId(null);
-    setMcAmount('');
-    setMcNote('');
-  };
-
-  const handleEditMorningCash = (m: MorningCashRecord) => {
-    setEditingMcId(m.id);
-    setMcDate(m.date);
-    setMcAmount(String(m.amountJod));
-    setMcNote(m.note || '');
-  };
-
-  const applyExpenseTemplate = (tpl: ExpenseTemplate) => {
-    setExpCategory(tpl.category);
-    setExpTitle(tpl.title);
-    setExpAmount(String(tpl.defaultAmountJod));
-    if (tpl.partType) setExpPartType(tpl.partType);
-    if (tpl.notes) setExpNote(tpl.notes);
-    setExpError('');
-  };
-
-  const handleExpenseSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setExpError('');
-
-    const amt = Number(expAmount);
-    if (!expTitle.trim()) {
-      setExpError(
-        lang === 'ar'
-          ? 'يرجى إدخال بيان / وصف المصروف.'
-          : 'Please enter the expense description.'
-      );
-      return;
-    }
-    if (!Number.isFinite(amt) || amt <= 0) {
-      setExpError(
-        lang === 'ar'
-          ? 'يرجى إدخال مبلغ صحيح بالدينار الأردني.'
-          : 'Please enter a valid amount in JOD.'
-      );
-      return;
-    }
-    if (expCategory === 'parts_purchase' && !expPartType.trim()) {
-      setExpError(
-        lang === 'ar'
-          ? 'عند اختيار "شراء قطع" يرجى كتابة نوع القطع المشتراة.'
-          : 'Please specify the part type when recording a parts purchase.'
-      );
-      return;
-    }
-
-    const record: ExpenseRecord = {
-      id: editingExpId || `exp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-      date: expDate || getTodayStr(),
-      time: expTime || '10:00',
-      category: expCategory,
-      title: expTitle.trim(),
-      partType: expCategory === 'parts_purchase' ? expPartType.trim() : undefined,
-      amountJod: amt,
-      paymentMethod: expPaymentMethod,
-      note: expNote.trim(),
-      recordedBy: currentUserFullName,
-    };
-
-    onSaveExpense(record);
-    setEditingExpId(null);
-    setExpTitle('');
-    setExpPartType('');
-    setExpAmount('');
-    setExpNote('');
-  };
-
-  const handleEditExpense = (exp: ExpenseRecord) => {
-    setEditingExpId(exp.id);
-    setExpDate(exp.date);
-    setExpTime(exp.time);
-    setExpCategory(exp.category);
-    setExpTitle(exp.title);
-    setExpPartType(exp.partType || '');
-    setExpAmount(String(exp.amountJod));
-    setExpPaymentMethod(exp.paymentMethod);
-    setExpNote(exp.note || '');
-    setExpError('');
-  };
+  }, [now]);
 
   const getCategoryLabel = (cat: ExpenseCategory) => {
     if (lang === 'ar') {
@@ -222,660 +221,458 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
       : 'Other Expense';
   };
 
+  const openAddExpenseModal = () => {
+    setEditingExpense(null);
+    setEditingMorningCash(null);
+    setFinanceModalTab('expense');
+    setIsFinanceModalOpen(true);
+  };
+
+  const openAddMorningCashModal = () => {
+    setEditingExpense(null);
+    setEditingMorningCash(null);
+    setFinanceModalTab('morning_cash');
+    setIsFinanceModalOpen(true);
+  };
+
+  const openEditExpenseModal = (exp: ExpenseRecord) => {
+    setEditingExpense(exp);
+    setEditingMorningCash(null);
+    setFinanceModalTab('expense');
+    setIsFinanceModalOpen(true);
+  };
+
+  const openEditMorningCashModal = (mc: MorningCashRecord) => {
+    setEditingExpense(null);
+    setEditingMorningCash(mc);
+    setFinanceModalTab('morning_cash');
+    setIsFinanceModalOpen(true);
+  };
+
   return (
-    <div className="space-y-6">
-      {/* Period Selector & Financial Summary Report Header */}
-      <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-          <div>
-            <h2 className="text-lg sm:text-xl font-extrabold text-[#0B3B68]">
+    <div className="space-y-4">
+      {/* Automatic Cash Rollover Notification Card — الترحيل التلقائي إلى الكاش بنهاية اليوم */}
+      <div className="rounded-2xl bg-gradient-to-r from-emerald-900 via-[#1E824C] to-emerald-800 text-white p-3 sm:p-3.5 shadow-md border border-emerald-500/30 relative overflow-hidden">
+        <div className="absolute top-0 end-0 -mt-8 -me-8 w-44 h-44 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+        
+        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 text-white text-xs font-black shadow-2xs backdrop-blur-xs">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 animate-pulse" />
+              {lang === 'ar' ? 'الترحيل التلقائي إلى الكاش: نشط' : 'Auto Rollover: Active'}
+            </span>
+            <span className="text-emerald-200 text-xs font-extrabold">
               {lang === 'ar'
-                ? 'الإدارة المالية والتقارير (دينار أردني JOD)'
-                : 'Financial Management & Reports (JOD)'}
-            </h2>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 mt-1">
-              <span>{lang === 'ar' ? 'الفترة المحسوبة:' : 'Calculated Period:'}</span>
-              <span className="px-2.5 py-0.5 rounded-lg bg-slate-100 font-bold text-[#0B3B68] inline-flex items-center gap-1.5">
-                <span>{getDayName(summary.startDate, lang)}</span>
-                <span dir="ltr" className="font-mono tabular-nums">
-                  {summary.startDate}
-                </span>
+                ? `اليوم: ${getDayName(referenceDate, lang)} (${referenceDate})`
+                : `Today: ${getDayName(referenceDate, lang)} (${referenceDate})`}
+            </span>
+          </div>
+
+          {/* Live Countdown & Today's Rollover Snapshot */}
+          <div className="grid grid-cols-2 sm:flex sm:items-center gap-2.5 shrink-0 bg-black/20 p-3 rounded-2xl border border-white/10 backdrop-blur-xs">
+            <div className="text-center px-2 py-1">
+              <span className="text-2xs text-emerald-200 block font-bold leading-tight">
+                {lang === 'ar' ? 'الوقت حتى الإغلاق والترحيل:' : 'Time Until Auto-Rollover:'}
               </span>
-              <span>{lang === 'ar' ? 'إلى' : 'to'}</span>
-              <span className="px-2.5 py-0.5 rounded-lg bg-slate-100 font-bold text-[#0B3B68] inline-flex items-center gap-1.5">
-                <span>{getDayName(summary.endDate, lang)}</span>
-                <span dir="ltr" className="font-mono tabular-nums">
-                  {summary.endDate}
-                </span>
+              <div dir="ltr" className="font-mono text-sm sm:text-base font-black text-amber-300 mt-0.5 tracking-wider">
+                {endOfDayCountdown.hours}:{endOfDayCountdown.minutes}:{endOfDayCountdown.seconds}
+              </div>
+            </div>
+
+            <div className="text-center px-2 py-1 border-s border-white/15">
+              <span className="text-2xs text-emerald-200 block font-bold leading-tight">
+                {lang === 'ar' ? 'صافي أرباح اليوم للترحيل:' : 'Today Net for Rollover:'}
               </span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Period Tabs: Daily / Weekly / Monthly / All */}
-            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl">
-              {(
-                [
-                  { id: 'daily', ar: 'تقرير يومي', en: 'Daily' },
-                  { id: 'weekly', ar: 'تقرير أسبوعي', en: 'Weekly' },
-                  { id: 'monthly', ar: 'تقرير شهري', en: 'Monthly' },
-                  { id: 'all', ar: 'شامل', en: 'All Time' },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setPeriod(tab.id)}
-                  className={`min-h-[40px] px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-                    period === tab.id
-                      ? 'bg-[#0B3B68] text-white shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {lang === 'ar' ? tab.ar : tab.en}
-                </button>
-              ))}
-            </div>
-
-            <input
-              type="date"
-              value={referenceDate}
-              onChange={(e) => setReferenceDate(e.target.value)}
-              aria-label={lang === 'ar' ? 'تاريخ التقرير المرجعي' : 'Reference report date'}
-              className="min-h-[42px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white font-mono text-xs sm:text-sm tabular-nums text-slate-900"
-            />
-          </div>
-        </div>
-
-        {/* 4 Financial KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
-            <div className="flex items-center justify-between text-xs font-bold text-slate-600">
-              <span>{lang === 'ar' ? 'الكاش الصباحي (رصيد الصندوق)' : 'Morning Cash Float'}</span>
-              <Wallet className="w-4 h-4 text-[#0B3B68]" />
-            </div>
-            <div className="text-2xl font-mono font-extrabold tabular-nums text-[#0B3B68] mt-2">
-              {formatJod(summary.morningCashJod, lang)}
-            </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              {lang === 'ar'
-                ? `عدد سجلات الصباح: ${periodMorningCash.length}`
-                : `Morning entries: ${periodMorningCash.length}`}
-            </div>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
-            <div className="flex items-center justify-between text-xs font-bold text-slate-600">
-              <span>
-                {lang === 'ar'
-                  ? 'مقبوضات الصيانة (مرحّلة تلقائياً)'
-                  : 'Paid Maintenance Revenue'}
-              </span>
-              <TrendingUp className="w-4 h-4 text-[#1E824C]" />
-            </div>
-            <div className="text-2xl font-mono font-extrabold tabular-nums text-[#1E824C] mt-2">
-              {formatJod(summary.totalRevenueJod, lang)}
-            </div>
-            <div className="text-[11px] text-slate-600 mt-1 font-mono tabular-nums">
-              {lang === 'ar'
-                ? `كاش: ${summary.revenueByMethod.cash} · شيك: ${summary.revenueByMethod.check} · كلك: ${summary.revenueByMethod.cliq}`
-                : `Cash: ${summary.revenueByMethod.cash} · Check: ${summary.revenueByMethod.check} · CliQ: ${summary.revenueByMethod.cliq}`}
-            </div>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200">
-            <div className="flex items-center justify-between text-xs font-bold text-slate-600">
-              <span>{lang === 'ar' ? 'إجمالي المصاريف' : 'Total Expenses'}</span>
-              <TrendingDown className="w-4 h-4 text-rose-600" />
-            </div>
-            <div className="text-2xl font-mono font-extrabold tabular-nums text-rose-600 mt-2">
-              {formatJod(summary.totalExpensesJod, lang)}
-            </div>
-            <div className="text-[11px] text-slate-600 mt-1 font-mono tabular-nums">
-              {lang === 'ar'
-                ? `بنزين: ${summary.expensesByCategory.fuel} · سيارة: ${summary.expensesByCategory.car_repair} · قطع: ${summary.expensesByCategory.parts_purchase}`
-                : `Fuel: ${summary.expensesByCategory.fuel} · Car: ${summary.expensesByCategory.car_repair} · Parts: ${summary.expensesByCategory.parts_purchase}`}
-            </div>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-[#0B3B68] text-white">
-            <div className="flex items-center justify-between text-xs font-bold text-sky-200">
-              <span>
-                {lang === 'ar' ? 'صافي الكاش الفعلي بالصندوق' : 'Net Cash in Drawer'}
-              </span>
-              <Banknote className="w-4 h-4 text-[#E58E26]" />
-            </div>
-            <div className="text-2xl font-mono font-extrabold tabular-nums text-white mt-2">
-              {formatJod(summary.netCashDrawerJod, lang)}
-            </div>
-            <div className="text-[11px] text-amber-300 mt-1 font-mono tabular-nums">
-              {lang === 'ar'
-                ? `الرصيد الكلي (شامل الشيك/كلك): ${formatJod(summary.totalBalanceWithMorningJod, lang)}`
-                : `Total Balance (incl. Check/CliQ): ${formatJod(summary.totalBalanceWithMorningJod, lang)}`}
+              <div className="font-mono text-sm sm:text-base font-black text-white mt-0.5">
+                {summary.netProfitJod >= 0 ? '+' : ''}
+                {formatJod(summary.netProfitJod, lang)}
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Forms Grid: Morning Cash + Expenses */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Morning Cash Form (4 cols) */}
-        <div className="lg:col-span-4 rounded-2xl bg-white border border-slate-200 p-5 shadow-sm space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#0B3B68] text-white flex items-center justify-center">
-                <Wallet className="w-4 h-4" />
-              </div>
-              <h3 className="text-base font-extrabold text-[#0B3B68]">
-                {editingMcId
-                  ? lang === 'ar'
-                    ? 'تعديل كاش الصباح'
-                    : 'Edit Morning Cash'
-                  : lang === 'ar'
-                  ? 'تسجيل كاش الصباح'
-                  : 'Record Morning Cash'}
-              </h3>
-            </div>
-            {editingMcId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingMcId(null);
-                  setMcAmount('');
-                  setMcNote('');
-                }}
-                className="text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
-              >
-                {lang === 'ar' ? 'إلغاء' : 'Cancel'}
-              </button>
-            )}
+      {/* Top Banner / Hero Header (Compact & Mobile-Harmonious) */}
+      <div className="rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#0B3B68] via-[#0E4980] to-[#155E95] text-white p-3 sm:p-4 shadow-lg relative overflow-hidden space-y-3">
+        <div className="absolute top-0 end-0 -mt-12 -me-12 w-64 h-64 bg-white/5 rounded-full blur-2xl pointer-events-none" />
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="text-base sm:text-lg lg:text-xl font-extrabold tracking-tight leading-snug">
+              {lang === 'ar' ? 'المالية اليومية' : 'Daily Finance'}
+            </h1>
           </div>
 
-          <form onSubmit={handleMorningCashSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label
-                htmlFor="mc-date"
-                className="text-xs font-bold text-slate-700 block"
+          {/* Primary Action Buttons: إضافة مصروف + كاش الصباح + تحويل للمالية المتقدمة + حساب كلك */}
+          <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2 w-full lg:w-auto shrink-0">
+            <div className="grid grid-cols-3 sm:flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={openAddExpenseModal}
+                className="min-h-[40px] px-3 sm:px-4 py-2 rounded-xl bg-white text-[#0B3B68] hover:bg-sky-50 text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer text-center"
               >
-                {lang === 'ar' ? 'التاريخ' : 'Date'}
-              </label>
-              <input
-                id="mc-date"
-                type="date"
-                required
-                value={mcDate}
-                onChange={(e) => setMcDate(e.target.value)}
-                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 font-mono text-sm tabular-nums"
-              />
-            </div>
+                <Plus className="w-4 h-4 text-amber-600 stroke-[2.5] shrink-0" />
+                <span className="truncate">{lang === 'ar' ? 'إضافة مصروف' : 'New Expense'}</span>
+              </button>
 
-            <div className="space-y-1.5">
-              <label
-                htmlFor="mc-amount"
-                className="text-xs font-bold text-slate-700 block"
+              <button
+                type="button"
+                onClick={openAddMorningCashModal}
+                className="min-h-[40px] px-3 sm:px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 border border-white/20 transition-colors cursor-pointer text-center"
               >
-                {lang === 'ar' ? 'مبلغ كاش الصباح (دينار أردني JOD)' : 'Morning Cash Amount (JOD)'}
-              </label>
-              <input
-                id="mc-amount"
-                type="number"
-                step="0.5"
-                min="0"
-                required
-                value={mcAmount}
-                onChange={(e) => setMcAmount(e.target.value)}
-                placeholder="100.00"
-                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 font-mono text-sm font-bold tabular-nums"
-              />
-            </div>
+                <Wallet className="w-4 h-4 text-emerald-300 shrink-0" />
+                <span className="truncate">{lang === 'ar' ? 'كاش الصباح' : 'Morning Cash'}</span>
+              </button>
 
-            <div className="space-y-1.5">
-              <label
-                htmlFor="mc-note"
-                className="text-xs font-bold text-slate-700 block"
+              <button
+                type="button"
+                onClick={() => setIsCliqModalOpen(true)}
+                className="min-h-[40px] px-3 sm:px-4 py-2 rounded-xl bg-indigo-500/30 hover:bg-indigo-500/40 text-amber-200 text-xs font-extrabold flex items-center justify-center gap-1.5 border border-indigo-300/40 transition-colors cursor-pointer text-center"
               >
-                {lang === 'ar' ? 'ملاحظة' : 'Note'}
-              </label>
-              <input
-                id="mc-note"
-                type="text"
-                value={mcNote}
-                onChange={(e) => setMcNote(e.target.value)}
-                placeholder={lang === 'ar' ? 'عهدة الصندوق الصباحية...' : 'Drawer opening cash...'}
-                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-sm"
-              />
+                <Smartphone className="w-4 h-4 text-amber-300 shrink-0" />
+                <span className="truncate">{lang === 'ar' ? 'حساب كلك (CliQ)' : 'CliQ Account'}</span>
+              </button>
             </div>
+          </div>
+        </div>
 
-            <button
-              type="submit"
-              className="w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-[#0B3B68] hover:bg-[#155E95] text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>
-                {editingMcId
-                  ? lang === 'ar'
-                    ? 'حفظ تعديل الكاش الصباحي'
-                    : 'Update Morning Cash'
-                  : lang === 'ar'
-                  ? 'إضافة كاش الصباح'
-                  : 'Save Morning Cash'}
+        {/* Compact Mobile-Friendly KPI Stats Summary (2 cols on phone, 3 on tablet, 6 on desktop) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-3 border-t border-white/15">
+          <div className="bg-white/10 backdrop-blur-xs rounded-xl p-2.5 border border-white/10">
+            <span className="text-[11px] font-extrabold text-sky-200 block leading-tight truncate">
+              {lang === 'ar' ? 'كاش الصباح' : 'Morning Cash'}
+            </span>
+            <span className="text-base sm:text-xl font-black font-mono text-white mt-0.5 block">
+              {formatJod(summary.morningCashJod, lang)}
+            </span>
+          </div>
+
+          <div className="bg-white/10 backdrop-blur-xs rounded-xl p-2.5 border border-white/10">
+            <span className="text-[11px] font-extrabold text-emerald-200 block leading-tight truncate">
+              {lang === 'ar' ? 'مقبوضات اليوم' : 'Collections'}
+            </span>
+            <span className="text-base sm:text-xl font-black font-mono text-emerald-300 mt-0.5 block">
+              +{formatJod(summary.totalRevenueJod, lang)}
+            </span>
+            <span className="text-[10px] text-emerald-100/90 block mt-0.5 leading-tight truncate">
+              {lang === 'ar'
+                ? `كاش: ${summary.revenueByMethod.cash.toFixed(0)} · كلك/شيك: ${(
+                    summary.revenueByMethod.cliq + summary.revenueByMethod.check
+                  ).toFixed(0)}`
+                : `Visits: ${summary.paidVisitsCount}`}
+            </span>
+          </div>
+
+          {/* Dedicated CliQ Customer Account Box in Daily Finance (مفصول عن الكاش) */}
+          <div className="bg-indigo-500/30 backdrop-blur-xs rounded-xl p-2.5 border border-indigo-300/40">
+            <span className="text-[11px] font-extrabold text-amber-200 block leading-tight truncate">
+              {lang === 'ar' ? 'حساب كلك اليوم' : "Today's CliQ"}
+            </span>
+            <span className="text-base sm:text-xl font-black font-mono text-white mt-0.5 block">
+              +{formatJod(summary.revenueByMethod.cliq, lang)}
+            </span>
+            <span className="text-[10px] text-indigo-100/90 block mt-0.5 leading-tight truncate">
+              {lang === 'ar'
+                ? `إجمالي كلك: ${formatJod(cliqMetrics.totalBalanceJod, lang)}`
+                : `Total: ${formatJod(cliqMetrics.totalBalanceJod, lang)}`}
+            </span>
+          </div>
+
+          <div className="bg-white/10 backdrop-blur-xs rounded-xl p-2.5 border border-white/10">
+            <span className="text-[11px] font-extrabold text-rose-200 block leading-tight truncate">
+              {lang === 'ar' ? 'مصاريف اليوم' : 'Expenses'}
+            </span>
+            <span className="text-base sm:text-xl font-black font-mono text-rose-300 mt-0.5 block">
+              -{formatJod(summary.totalExpensesJod, lang)}
+            </span>
+            <span className="text-[10px] text-rose-100/90 block mt-0.5 leading-tight truncate">
+              {lang === 'ar' ? `الحركات: ${periodExpenses.length}` : `Entries: ${periodExpenses.length}`}
+            </span>
+          </div>
+
+          <div className="bg-emerald-500/20 backdrop-blur-xs rounded-xl p-2.5 border border-emerald-300/30">
+            <span className="text-[11px] font-extrabold text-emerald-200 block leading-tight truncate">
+              {lang === 'ar' ? 'صافي أرباح اليوم' : 'Net Profit'}
+            </span>
+            <span className="text-base sm:text-xl font-black font-mono text-emerald-300 mt-0.5 block">
+              {summary.netProfitJod >= 0 ? '+' : ''}
+              {formatJod(summary.netProfitJod, lang)}
+            </span>
+          </div>
+
+          <div className="bg-amber-500/20 backdrop-blur-xs rounded-xl p-2.5 border border-amber-300/30">
+            <span className="text-[11px] font-extrabold text-amber-200 block leading-tight truncate">
+              {lang === 'ar' ? 'صافي كاش الدرج' : 'Cash Drawer'}
+            </span>
+            <span className="text-base sm:text-xl font-black font-mono text-amber-300 mt-0.5 block">
+              {formatJod(summary.netCashDrawerJod, lang)}
+            </span>
+            <span className="text-[10px] text-amber-100 block mt-0.5 leading-tight truncate">
+              {lang === 'ar'
+                ? `كاش فعلي (بدون كلك)`
+                : `Cash only (no CliQ)`}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Dedicated CliQ Customer Account Bar — قائمة حساب الزبون كلك */}
+      <div className="rounded-2xl bg-white border border-indigo-200 p-3.5 sm:p-4 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-800 flex items-center justify-center shrink-0">
+            <Smartphone className="w-5 h-5 text-indigo-700" />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm sm:text-base font-extrabold text-[#0B3B68]">
+                {lang === 'ar' ? 'قائمة حساب الزبون كلك (CliQ)' : 'CliQ Customer Account List'}
+              </h3>
+              <span className="px-2.5 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-900 text-[11px] font-black">
+                {lang === 'ar' ? 'مفصول عن الكاش' : 'Independent of Cash'}
               </span>
-            </button>
-          </form>
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5 font-medium">
+              {lang === 'ar'
+                ? `إجمالي الرصيد: ${formatJod(cliqMetrics.totalBalanceJod, lang)} · تحويلات اليوم: +${formatJod(cliqMetrics.todayBalanceJod, lang)} (${cliqMetrics.todayTransactionsCount} تحويل)`
+                : `Total CliQ Balance: ${formatJod(cliqMetrics.totalBalanceJod, lang)} · Today: +${formatJod(cliqMetrics.todayBalanceJod, lang)}`}
+            </p>
+          </div>
+        </div>
 
-          {/* Morning Cash Saved List */}
-          <div className="pt-3 border-t border-slate-100 space-y-2">
-            <h4 className="text-xs font-bold text-slate-500">
-              {lang === 'ar' ? 'سجل كاش الصباح' : 'Morning Cash History'}
-            </h4>
-            {state.morningCash.slice(0, 5).map((m) => (
-              <div
-                key={m.id}
-                className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-2"
-              >
-                <div className="space-y-1">
-                  <div className="text-sm font-mono font-extrabold tabular-nums text-[#0B3B68]">
-                    {formatJod(m.amountJod, lang)}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
-                    <span className="font-bold text-slate-700">
-                      {getDayName(m.date, lang)}
+        <button
+          type="button"
+          onClick={() => setIsCliqModalOpen(true)}
+          className="min-h-[38px] px-4 py-1.5 rounded-xl bg-indigo-900 hover:bg-indigo-950 text-white text-xs sm:text-sm font-black flex items-center gap-2 cursor-pointer shadow-xs transition-colors ms-auto"
+        >
+          <Smartphone className="w-4 h-4 text-amber-300 shrink-0" />
+          <span>{lang === 'ar' ? 'فتح قائمة حساب كلك' : 'Open CliQ List'}</span>
+          <span className="font-mono text-xs bg-white/20 px-1.5 py-0.5 rounded text-amber-200">
+            {cliqMetrics.totalTransactionsCount}
+          </span>
+        </button>
+      </div>
+
+      {/* Success Notification Alert */}
+      {financeBanner && (
+        <div
+          role="status"
+          className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs sm:text-sm font-bold flex flex-wrap items-center justify-between gap-3 shadow-xs animate-in fade-in"
+        >
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="w-5 h-5 text-[#1E824C] shrink-0" />
+            <span className="break-words">{financeBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFinanceBanner('')}
+            className="text-emerald-700 hover:text-emerald-900 p-1 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Active Morning Cash Section */}
+      <div className="rounded-2xl bg-white border border-slate-200 p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-[#1E824C] flex items-center justify-center shrink-0">
+              <Wallet className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-extrabold text-[#0B3B68]">
+                {lang === 'ar'
+                  ? `الكاش الصباحي وعهدة الصندوق النشطة (${activeMorningCashList.length})`
+                  : `Active Morning Cash Float (${activeMorningCashList.length})`}
+              </h3>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-mono font-extrabold text-[#0B3B68] bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+              {lang === 'ar' ? 'رصيد الصباح: ' : 'Morning Cash: '}
+              {formatJod(summary.morningCashJod, lang)}
+            </span>
+            <span className="text-xs font-mono font-extrabold text-[#1E824C] bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200">
+              {lang === 'ar' ? 'مع أرباح اليوم: ' : 'With Profits: '}
+              {formatJod(summary.totalBalanceWithMorningJod, lang)}
+            </span>
+          </div>
+        </div>
+
+        {activeMorningCashList.length === 0 ? (
+          <div className="text-center py-4 text-xs text-slate-500 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+            {lang === 'ar'
+              ? 'لا يوجد كاش صباح مسجل لليوم.'
+              : 'No active morning cash recorded.'}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {activeMorningCashList.map((m) => {
+              const isAutoRollover = (m.note || '').includes('ترحيل تلقائي');
+              return (
+                <div
+                  key={m.id}
+                  className="p-4 rounded-2xl border bg-slate-50 border-slate-200 hover:border-emerald-200 transition-all shadow-2xs space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xl font-mono font-black tabular-nums text-[#0B3B68]">
+                      {formatJod(m.amountJod, lang)}
                     </span>
                     <span
+                      className={`text-xs px-2.5 py-0.5 rounded-full font-bold ${
+                        isAutoRollover
+                          ? 'bg-emerald-100 text-[#145A32] border border-emerald-300'
+                          : 'bg-sky-100 text-[#0B3B68]'
+                      }`}
+                    >
+                      {isAutoRollover
+                        ? lang === 'ar'
+                          ? 'ترحيل تلقائي'
+                          : 'Auto-Rollover'
+                        : lang === 'ar'
+                        ? 'عهدة الصندوق'
+                        : 'Opening Float'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                    <span className="font-bold text-slate-800">{getDayName(m.date, lang)}</span>
+                    <span
                       dir="ltr"
-                      className="font-mono tabular-nums px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700"
+                      className="font-mono tabular-nums px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 font-bold"
                     >
                       {m.date}
                     </span>
-                    {m.note ? <span>· {m.note}</span> : null}
+                    {m.note && <span className="text-slate-600 break-words font-medium">· {m.note}</span>}
+                  </div>
+
+                  <div className="flex items-center justify-end gap-1.5 pt-2.5 border-t border-slate-200/60">
+                    <button
+                      type="button"
+                      onClick={() => openEditMorningCashModal(m)}
+                      aria-label={
+                        lang === 'ar'
+                          ? `تعديل كاش الصباح ${m.date}`
+                          : `Edit morning cash ${m.date}`
+                      }
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl border border-sky-200 bg-sky-50/90 hover:bg-sky-100 text-[#0B3B68] text-xs font-extrabold flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 text-[#155E95] shrink-0" />
+                      <span>{lang === 'ar' ? 'تعديل' : 'Edit'}</span>
+                    </button>
+
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDeleteTarget({
+                            type: 'morning_cash',
+                            id: m.id,
+                            label: `${lang === 'ar' ? 'كاش الصباح' : 'Morning Cash'} (${m.date}) — ${formatJod(m.amountJod, lang)}`,
+                          })
+                        }
+                        aria-label={
+                          lang === 'ar'
+                            ? `حذف كاش الصباح ${m.date}`
+                            : `Delete morning cash ${m.date}`
+                        }
+                        className="min-h-[38px] px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50/90 text-rose-700 hover:bg-rose-100 text-xs font-extrabold flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>{lang === 'ar' ? 'حذف' : 'Delete'}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleEditMorningCash(m)}
-                    aria-label={lang === 'ar' ? `تعديل كاش الصباح ${m.date}` : `Edit morning cash ${m.date}`}
-                    className="min-h-[38px] min-w-[38px] rounded-lg border border-slate-200 bg-white text-[#0B3B68] hover:bg-slate-100 flex items-center justify-center cursor-pointer"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setDeleteTarget({
-                        type: 'morning_cash',
-                        id: m.id,
-                        label: `${lang === 'ar' ? 'كاش الصباح' : 'Morning Cash'} (${m.date}) — ${formatJod(m.amountJod, lang)}`,
-                      })
-                    }
-                    aria-label={lang === 'ar' ? `حذف كاش الصباح ${m.date}` : `Delete morning cash ${m.date}`}
-                    className="min-h-[38px] min-w-[38px] rounded-lg border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 flex items-center justify-center cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        </div>
-
-        {/* Expenses Form (8 cols) */}
-        <div className="lg:col-span-8 rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#E58E26] text-white flex items-center justify-center">
-                <Receipt className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">
-                  {editingExpId
-                    ? lang === 'ar'
-                      ? 'تعديل مصروف'
-                      : 'Edit Expense'
-                    : lang === 'ar'
-                    ? 'تسجيل المصاريف (بنزين / تصليح سيارة / شراء قطع)'
-                    : 'Record Expenses (Fuel / Car Repair / Parts Purchase)'}
-                </h3>
-              </div>
-            </div>
-            {editingExpId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingExpId(null);
-                  setExpTitle('');
-                  setExpPartType('');
-                  setExpAmount('');
-                  setExpNote('');
-                }}
-                className="text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
-              >
-                {lang === 'ar' ? 'إلغاء التعديل' : 'Cancel Edit'}
-              </button>
-            )}
-          </div>
-
-          {/* 1-Tap Ready-Made Expense Templates */}
-          {state.expenseTemplates.length > 0 && (
-            <div className="space-y-2">
-              <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-[#E58E26]" />
-                <span>
-                  {lang === 'ar'
-                    ? 'مصاريف جاهزة للتعبئة الفورية بلمسة واحدة:'
-                    : '1-Tap Ready-Made Expense Templates:'}
-                </span>
-              </span>
-              <div className="flex flex-wrap gap-2">
-                {state.expenseTemplates.map((tpl) => (
-                  <button
-                    key={tpl.id}
-                    type="button"
-                    onClick={() => applyExpenseTemplate(tpl)}
-                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-amber-50/70 hover:bg-amber-100/80 border border-amber-200 text-slate-800 text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer"
-                  >
-                    <span>{tpl.title}</span>
-                    <span className="font-mono text-[#0B3B68] tabular-nums">
-                      ({formatJod(tpl.defaultAmountJod, lang)})
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {expError && (
-            <div
-              role="alert"
-              className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs sm:text-sm font-bold"
-            >
-              {expError}
-            </div>
-          )}
-
-          <form onSubmit={handleExpenseSubmit} className="space-y-4">
-            {/* Expense Category Selector: Fuel, Car Repair, Parts Purchase, Other */}
-            <div className="space-y-1.5">
-              <span className="text-xs sm:text-sm font-bold text-slate-800 block">
-                {lang === 'ar' ? 'نوع المصروف *' : 'Expense Category *'}
-              </span>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {(
-                  [
-                    { id: 'fuel', ar: 'بنزين', en: 'Fuel', icon: Fuel },
-                    { id: 'car_repair', ar: 'تصليح سيارة', en: 'Car Repair', icon: Car },
-                    { id: 'parts_purchase', ar: 'شراء قطع', en: 'Parts Purchase', icon: Cpu },
-                    { id: 'other', ar: 'مصاريف أخرى', en: 'Other', icon: Receipt },
-                  ] as const
-                ).map((cat) => {
-                  const Icon = cat.icon;
-                  const active = expCategory === cat.id;
-                  return (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => {
-                        setExpCategory(cat.id);
-                        if (!expTitle) {
-                          setExpTitle(lang === 'ar' ? cat.ar : cat.en);
-                        }
-                      }}
-                      className={`min-h-[48px] px-3 py-2 rounded-xl text-xs sm:text-sm font-bold border flex items-center justify-center gap-2 transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-[#0B3B68] text-white border-[#0B3B68] shadow-sm'
-                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-white'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span>{lang === 'ar' ? cat.ar : cat.en}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Dedicated Part Type Input when "Parts Purchase / شراء قطع" is selected */}
-            {expCategory === 'parts_purchase' && (
-              <div className="p-4 rounded-2xl bg-sky-50/70 border border-sky-200 space-y-2.5">
-                <label
-                  htmlFor="exp-part-type"
-                  className="text-xs sm:text-sm font-bold text-[#0B3B68] block"
-                >
-                  {lang === 'ar'
-                    ? 'كتابة نوع القطع المشتراة * (أو اختر من قائمة القطع أدناه)'
-                    : 'Specify Purchased Part Type *'}
-                </label>
-                <div className="flex flex-wrap gap-1.5">
-                  {state.parts.map((p: PartItem) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => {
-                        setExpPartType(p.name);
-                        if (!expTitle || expTitle === 'شراء قطع') {
-                          setExpTitle(`شراء قطع: ${p.name}`);
-                        }
-                        if (!expAmount) {
-                          setExpAmount(String(p.defaultCostJod));
-                        }
-                      }}
-                      className={`min-h-[36px] px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                        expPartType === p.name
-                          ? 'bg-[#1E824C] text-white border-[#1E824C]'
-                          : 'bg-white text-slate-700 border-slate-200 hover:border-[#0B3B68]'
-                      }`}
-                    >
-                      {p.name} ({formatJod(p.defaultCostJod, lang)})
-                    </button>
-                  ))}
-                </div>
-                <input
-                  id="exp-part-type"
-                  type="text"
-                  required
-                  value={expPartType}
-                  onChange={(e) => setExpPartType(e.target.value)}
-                  placeholder={
-                    lang === 'ar'
-                      ? 'اكتب نوع القطع ومواصفاتها (مثال: SSD 512GB + راوتر TP-Link)...'
-                      : 'Write exact part type and model...'
-                  }
-                  className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-sm text-slate-900"
-                />
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="md:col-span-2 space-y-1.5">
-                <label
-                  htmlFor="exp-title"
-                  className="text-xs font-bold text-slate-700 block"
-                >
-                  {lang === 'ar' ? 'بيان / تفاصيل المصروف *' : 'Expense Title / Description *'}
-                </label>
-                <input
-                  id="exp-title"
-                  type="text"
-                  required
-                  value={expTitle}
-                  onChange={(e) => setExpTitle(e.target.value)}
-                  placeholder={
-                    lang === 'ar'
-                      ? 'مثال: تعبئة بنزين جولة الصيانة / تصليح بريكات...'
-                      : 'e.g. Fuel refill / Brake pad replacement...'
-                  }
-                  className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="exp-amount"
-                  className="text-xs font-bold text-slate-700 block"
-                >
-                  {lang === 'ar' ? 'المبلغ (دينار أردني JOD) *' : 'Amount (JOD) *'}
-                </label>
-                <input
-                  id="exp-amount"
-                  type="number"
-                  step="0.25"
-                  min="0.25"
-                  required
-                  value={expAmount}
-                  onChange={(e) => setExpAmount(e.target.value)}
-                  placeholder="15.00"
-                  className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 font-mono text-sm font-bold tabular-nums"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="exp-date"
-                  className="text-xs font-bold text-slate-700 block"
-                >
-                  {lang === 'ar' ? 'التاريخ' : 'Date'}
-                </label>
-                <input
-                  id="exp-date"
-                  type="date"
-                  value={expDate}
-                  onChange={(e) => setExpDate(e.target.value)}
-                  className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 font-mono text-sm tabular-nums"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <span className="text-xs font-bold text-slate-700 block">
-                  {lang === 'ar' ? 'طريقة الدفع' : 'Payment Method'}
-                </span>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {(
-                    [
-                      { id: 'cash', ar: 'كاش', en: 'Cash' },
-                      { id: 'check', ar: 'شيك', en: 'Check' },
-                      { id: 'cliq', ar: 'كلك', en: 'CliQ' },
-                    ] as const
-                  ).map((pm) => (
-                    <button
-                      key={pm.id}
-                      type="button"
-                      onClick={() => setExpPaymentMethod(pm.id)}
-                      className={`min-h-[44px] px-2 py-2 rounded-xl text-xs font-bold border cursor-pointer ${
-                        expPaymentMethod === pm.id
-                          ? 'bg-[#0B3B68] text-white border-[#0B3B68]'
-                          : 'bg-white text-slate-700 border-slate-200'
-                      }`}
-                    >
-                      {lang === 'ar' ? pm.ar : pm.en}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-1.5">
-                <label
-                  htmlFor="exp-note"
-                  className="text-xs font-bold text-slate-700 block"
-                >
-                  {lang === 'ar' ? 'ملاحظة' : 'Note'}
-                </label>
-                <input
-                  id="exp-note"
-                  type="text"
-                  value={expNote}
-                  onChange={(e) => setExpNote(e.target.value)}
-                  placeholder={lang === 'ar' ? 'رقم الفاتورة أو المحطة...' : 'Invoice # or station...'}
-                  className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 text-sm"
-                />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full min-h-[48px] px-5 py-2.5 rounded-xl bg-[#E58E26] hover:bg-[#d17d1b] text-white font-extrabold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>
-                {editingExpId
-                  ? lang === 'ar'
-                    ? 'حفظ تعديلات المصروف'
-                    : 'Save Expense Changes'
-                  : lang === 'ar'
-                  ? 'إضافة المصروف إلى التقرير المالي'
-                  : 'Add Expense to Financial Ledger'}
-              </span>
-            </button>
-          </form>
-        </div>
+        )}
       </div>
 
-      {/* Search Bar for Financial Ledger */}
-      <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
+      {/* Search Toolbar for Expenses & Revenue */}
+      <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-xs">
         <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3.5" />
+          <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3.5 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={
               lang === 'ar'
-                ? 'ابحث في المصاريف أو مقبوضات الصيانة (البيان، نوع القطع، اسم الزبون، التاريخ)...'
-                : 'Search expenses or maintenance revenue (title, part type, customer, date)...'
+                ? 'ابحث في المصاريف أو مقبوضات الصيانة اليومية (البيان، نوع القطع، اسم الزبون، التاريخ)...'
+                : 'Search expenses or maintenance collections (title, part type, customer, date)...'
             }
             aria-label={lang === 'ar' ? 'بحث في السجل المالي' : 'Search financial records'}
-            className="w-full min-h-[46px] ps-10 pe-4 py-2 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0B3B68]"
+            className="w-full min-h-[46px] ps-10 pe-10 py-2 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white text-xs sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0B3B68]"
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute top-1/2 -translate-y-1/2 end-3 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Detailed Ledger for Selected Period: Expenses + Auto-Synced Maintenance Revenue */}
+      {/* Detailed Ledgers Grid: Expenses + Auto-Synced Maintenance Collections */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Expenses Log */}
-        <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-extrabold text-slate-900">
-              {lang === 'ar'
-                ? `سجل المصاريف للفترة (${periodExpenses.length})`
-                : `Expenses Log (${periodExpenses.length})`}
-            </h3>
-            <span className="text-sm font-mono font-bold tabular-nums text-rose-600">
-              {formatJod(summary.totalExpensesJod, lang)}
-            </span>
+        <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-amber-600" />
+                <span>
+                  {lang === 'ar'
+                    ? `سجل مصاريف اليوم (${periodExpenses.length})`
+                    : `Today Expenses (${periodExpenses.length})`}
+                </span>
+              </h3>
+            </div>
+            <div className="text-end">
+              <span className="text-sm font-mono font-black tabular-nums text-rose-600 bg-rose-50 px-3 py-1 rounded-xl border border-rose-200 block">
+                -{formatJod(summary.totalExpensesJod, lang)}
+              </span>
+            </div>
           </div>
 
           {periodExpenses.length === 0 ? (
-            <p className="text-xs text-slate-500 py-8 text-center">
+            <div className="text-center py-6 text-xs text-slate-500">
               {lang === 'ar'
-                ? 'لا توجد مصاريف مسجلة في هذه الفترة.'
-                : 'No expenses recorded in this period.'}
-            </p>
+                ? 'لا توجد مصاريف مسجلة لليوم.'
+                : 'No expenses recorded for today.'}
+            </div>
           ) : (
-            <div className="divide-y divide-slate-200">
+            <div className="divide-y divide-slate-100">
               {periodExpenses.map((exp) => (
                 <div
                   key={exp.id}
-                  className="py-3.5 flex items-center justify-between gap-3"
+                  className="py-3.5 px-2 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 transition-colors hover:bg-slate-50"
                 >
-                  <div className="space-y-1">
+                  <div className="space-y-1 flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-bold text-slate-900">
+                      <span className="text-sm font-bold text-slate-900 truncate">
                         {exp.title}
                       </span>
                       <span aria-hidden="true" className="text-slate-300">
                         ·
                       </span>
-                      <span className="text-xs font-bold text-[#0B3B68]">
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 shrink-0">
                         {getCategoryLabel(exp.category)}
                       </span>
                     </div>
+
                     {exp.partType && (
                       <div className="text-xs font-semibold text-[#145A32]">
                         {lang === 'ar' ? 'نوع القطع: ' : 'Part Type: '}
                         {exp.partType}
                       </div>
                     )}
+
                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
                       <span className="font-bold text-slate-700">
                         {getDayName(exp.date, lang)}
@@ -893,7 +690,7 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                         {exp.time}
                       </span>
                       <span>·</span>
-                      <span className="font-semibold">
+                      <span className="font-semibold text-slate-700">
                         {exp.paymentMethod === 'cash'
                           ? lang === 'ar'
                             ? 'كاش'
@@ -904,36 +701,52 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                             : 'Check'
                           : 'CliQ'}
                       </span>
-                      {exp.note ? <span>· {exp.note}</span> : null}
+                      {exp.note ? <span className="text-slate-500">· {exp.note}</span> : null}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-sm font-mono font-extrabold tabular-nums text-rose-600">
+                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                    <span className="text-sm font-mono font-black tabular-nums text-rose-600">
                       -{formatJod(exp.amountJod, lang)}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => handleEditExpense(exp)}
-                      aria-label={lang === 'ar' ? `تعديل مصروف ${exp.title}` : `Edit expense ${exp.title}`}
-                      className="min-h-[40px] min-w-[40px] rounded-xl border border-slate-200 bg-white text-[#0B3B68] hover:bg-slate-50 flex items-center justify-center cursor-pointer"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setDeleteTarget({
-                          type: 'expense',
-                          id: exp.id,
-                          label: `${exp.title} (${exp.date}) — ${formatJod(exp.amountJod, lang)}`,
-                        })
-                      }
-                      aria-label={lang === 'ar' ? `حذف مصروف ${exp.title}` : `Delete expense ${exp.title}`}
-                      className="min-h-[40px] min-w-[40px] rounded-xl border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 flex items-center justify-center cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openEditExpenseModal(exp)}
+                        aria-label={
+                          lang === 'ar'
+                            ? `تعديل مصروف ${exp.title}`
+                            : `Edit expense ${exp.title}`
+                        }
+                        className="min-h-[38px] px-3 py-1.5 rounded-xl border border-sky-200 bg-sky-50/90 hover:bg-sky-100 text-[#0B3B68] text-xs font-extrabold flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+                      >
+                        <Edit3 className="w-3.5 h-3.5 text-[#155E95] shrink-0" />
+                        <span>{lang === 'ar' ? 'تعديل' : 'Edit'}</span>
+                      </button>
+
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDeleteTarget({
+                              type: 'expense',
+                              id: exp.id,
+                              label: `${exp.title} (${exp.date}) — ${formatJod(exp.amountJod, lang)}`,
+                            })
+                          }
+                          aria-label={
+                            lang === 'ar'
+                              ? `حذف مصروف ${exp.title}`
+                              : `Delete expense ${exp.title}`
+                          }
+                          className="min-h-[38px] px-3 py-1.5 rounded-xl border border-rose-200 bg-rose-50/90 text-rose-700 hover:bg-rose-100 text-xs font-extrabold flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>{lang === 'ar' ? 'حذف' : 'Delete'}</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -941,44 +754,65 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
           )}
         </div>
 
-        {/* Auto-Synced Maintenance Revenue Log */}
-        <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
+        {/* Auto-Synced Maintenance Collections Log */}
+        <div className="rounded-2xl bg-white border border-slate-200 p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <div>
-              <h3 className="text-base font-extrabold text-slate-900">
-                {lang === 'ar'
-                  ? `مقبوضات الصيانة المرحّلة تلقائياً (${periodPaidVisits.length})`
-                  : `Auto-Synced Maintenance Collections (${periodPaidVisits.length})`}
+              <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-[#1E824C]" />
+                <span>
+                  {lang === 'ar'
+                    ? `مقبوضات الصيانة اليوم (${periodPaidVisits.length})`
+                    : `Maintenance Collections (${periodPaidVisits.length})`}
+                </span>
               </h3>
-              <p className="text-xs text-slate-500">
-                {lang === 'ar'
-                  ? 'تُرحّل تلقائياً عند تفعيل "تم الدفع" في شاشة طلبات الصيانة'
-                  : 'Automatically synced when visits are marked Paid in Maintenance'}
-              </p>
             </div>
-            <span className="text-sm font-mono font-bold tabular-nums text-[#1E824C]">
+            <span className="text-sm font-mono font-black tabular-nums text-[#1E824C] bg-emerald-50 px-3 py-1 rounded-xl border border-emerald-200">
               +{formatJod(summary.totalRevenueJod, lang)}
             </span>
           </div>
 
           {periodPaidVisits.length === 0 ? (
-            <p className="text-xs text-slate-500 py-8 text-center">
+            <div className="text-center py-6 text-xs text-slate-500">
               {lang === 'ar'
-                ? 'لا توجد مقبوضات صيانة مدفوعة في هذه الفترة.'
-                : 'No paid maintenance visits in this period.'}
-            </p>
+                ? 'لا توجد مقبوضات صيانة مدفوعة لليوم.'
+                : 'No paid maintenance visits for today.'}
+            </div>
           ) : (
-            <div className="divide-y divide-slate-200">
+            <div className="divide-y divide-slate-100">
               {periodPaidVisits.map((v) => (
                 <div
                   key={v.id}
-                  className="py-3.5 flex items-center justify-between gap-3"
+                  className="py-3.5 px-2 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors hover:bg-slate-50"
                 >
-                  <div className="space-y-1">
-                    <div className="text-sm font-bold text-[#0B3B68]">
-                      {v.customerName}
+                  <div className="space-y-1 flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-[#0B3B68] truncate">
+                        {v.customerName}
+                      </span>
+                      <span
+                        className={`text-2xs px-2 py-0.5 rounded-full font-bold shrink-0 ${
+                          v.paymentMethod === 'cliq'
+                            ? 'bg-indigo-100 text-indigo-900 border border-indigo-200'
+                            : 'bg-emerald-100 text-emerald-800'
+                        }`}
+                      >
+                        {v.paymentMethod === 'cash'
+                          ? lang === 'ar'
+                            ? 'كاش'
+                            : 'Cash'
+                          : v.paymentMethod === 'check'
+                          ? lang === 'ar'
+                            ? 'شيك'
+                            : 'Check'
+                          : lang === 'ar'
+                          ? 'كلك CliQ (حساب كلك)'
+                          : 'CliQ'}
+                      </span>
                     </div>
-                    <div className="text-xs text-slate-700">{v.problem}</div>
+
+                    <div className="text-xs text-slate-700 truncate">{v.problem}</div>
+
                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
                       <span className="font-bold text-slate-700">
                         {getDayName(v.visitDate, lang)}
@@ -989,24 +823,24 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
                       >
                         {v.visitDate}
                       </span>
-                      <span>·</span>
-                      <span className="font-semibold">
-                        {v.paymentMethod === 'cash'
-                          ? lang === 'ar'
-                            ? 'كاش'
-                            : 'Cash'
-                          : v.paymentMethod === 'check'
-                          ? lang === 'ar'
-                            ? 'شيك'
-                            : 'Check'
-                          : lang === 'ar'
-                          ? 'كلك (CliQ)'
-                          : 'CliQ'}
-                      </span>
+                      {v.visitTime && (
+                        <span
+                          dir="ltr"
+                          className="font-mono tabular-nums px-2 py-0.5 rounded-md bg-slate-100 text-slate-700"
+                        >
+                          {v.visitTime}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  <div className="text-sm font-mono font-extrabold tabular-nums text-[#1E824C] shrink-0">
-                    +{formatJod(v.amountJod, lang)}
+
+                  <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                    <span className="text-sm font-mono font-black tabular-nums text-[#1E824C]">
+                      +{formatJod(v.amountJod, lang)}
+                    </span>
+                    <span className="text-2xs text-slate-400 font-bold">
+                      {lang === 'ar' ? 'مزامنة تلقائية' : 'Synced'}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -1015,24 +849,110 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
         </div>
       </div>
 
-      {/* Confirm Delete Modal */}
+      {/* Delete Confirmation Modal */}
       <ConfirmDeleteModal
-        isOpen={!!deleteTarget}
+        isOpen={Boolean(deleteTarget)}
+        onCancel={() => setDeleteTarget(null)}
+        lang={lang}
         title={
-          lang === 'ar' ? 'تأكيد حذف السجل المالي' : 'Confirm Financial Record Deletion'
+          deleteTarget?.type === 'morning_cash'
+            ? lang === 'ar'
+              ? 'حذف سجل كاش الصباح'
+              : 'Delete Morning Cash Record'
+            : lang === 'ar'
+            ? 'حذف سجل المصروف'
+            : 'Delete Expense Record'
         }
         itemName={deleteTarget?.label || ''}
-        lang={lang}
-        onCancel={() => setDeleteTarget(null)}
         onConfirm={() => {
           if (!deleteTarget) return;
           if (deleteTarget.type === 'morning_cash') {
             onDeleteMorningCash(deleteTarget.id);
+            setFinanceBanner(
+              lang === 'ar'
+                ? 'تم حذف سجل كاش الصباح بنجاح.'
+                : 'Deleted morning cash record.'
+            );
           } else {
             onDeleteExpense(deleteTarget.id);
+            setFinanceBanner(
+              lang === 'ar'
+                ? 'تم حذف سجل المصروف بنجاح.'
+                : 'Deleted expense record.'
+            );
           }
           setDeleteTarget(null);
+          setTimeout(() => setFinanceBanner(''), 3500);
         }}
+      />
+
+      {/* Unified Edit/Add Financial Entry Modal */}
+      <EditFinanceRecordModal
+        isOpen={isFinanceModalOpen}
+        onClose={() => {
+          setIsFinanceModalOpen(false);
+          setEditingExpense(null);
+          setEditingMorningCash(null);
+        }}
+        lang={lang}
+        initialTab={financeModalTab}
+        mode={editingExpense || editingMorningCash ? 'edit' : 'add'}
+        expenseToEdit={editingExpense}
+        morningCashToEdit={editingMorningCash}
+        expenseTemplates={state.expenseTemplates || []}
+        parts={state.parts || []}
+        currentUserFullName={currentUserFullName}
+        activeNetProfitJod={summary.netProfitJod}
+        activeTotalWithMorningJod={summary.totalBalanceWithMorningJod}
+        onSaveExpense={(rec) => {
+          onSaveExpense(rec);
+          setIsFinanceModalOpen(false);
+          setEditingExpense(null);
+          setFinanceBanner(
+            lang === 'ar'
+              ? `تم حفظ المصروف بنجاح (${formatJod(rec.amountJod, lang)})`
+              : `Saved expense (${formatJod(rec.amountJod, lang)})`
+          );
+          setTimeout(() => setFinanceBanner(''), 3500);
+        }}
+        onSaveMorningCash={(mc) => {
+          onSaveMorningCash(mc);
+          setIsFinanceModalOpen(false);
+          setEditingMorningCash(null);
+          setFinanceBanner(
+            lang === 'ar'
+              ? `تم حفظ كاش الصباح بنجاح (${formatJod(mc.amountJod, lang)})`
+              : `Saved morning cash (${formatJod(mc.amountJod, lang)})`
+          );
+          setTimeout(() => setFinanceBanner(''), 3500);
+        }}
+      />
+
+      {/* Financial Report PDF & WhatsApp Modal (Detailed by Day + Interactive Carender) */}
+      <FinancialReportPdfModal
+        isOpen={isPdfReportOpen}
+        onClose={() => {
+          setIsPdfReportOpen(false);
+          setPdfOpenCalendar(false);
+        }}
+        lang={lang}
+        state={state}
+        initialPeriod={pdfReportPeriod}
+        initialScope="all_combined"
+        initialOpenCalendar={pdfOpenCalendar}
+        currentUserFullName={currentUserFullName}
+      />
+
+      {/* CliQ Customer Account Modal */}
+      <CliqAccountModal
+        isOpen={isCliqModalOpen}
+        onClose={() => setIsCliqModalOpen(false)}
+        lang={lang}
+        state={state}
+        onSaveVisit={onSaveVisit}
+        onDeleteVisit={onDeleteVisit}
+        currentUserFullName={currentUserFullName}
+        canDelete={canDelete}
       />
     </div>
   );

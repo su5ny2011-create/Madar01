@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+@theme {
+  --text-2xs: 0.72rem;
+  --text-2xs--line-height: 1.5;
+}
+
 @layer base {
   :root {
     --madar-navy: #0B3B68;
@@ -17,19 +22,42 @@
     -webkit-tap-highlight-color: transparent;
     overflow-x: hidden;
     max-width: 100vw;
+    line-height: 1.6;
+    letter-spacing: 0 !important;
   }
+
+  /* Prevent negative or positive letter-spacing from breaking or overlapping Arabic script */
+  [dir="rtl"] *,
+  html[lang="ar"] * {
+    letter-spacing: 0 !important;
+  }
+
+  /* Smooth bidirectional text typing in inputs & textareas without cursor jumping */
+  input[type="text"],
+  input[type="search"],
+  textarea {
+    unicode-bidi: plaintext;
+    line-height: 1.6;
+  }
+}
+
+.text-2xs {
+  font-size: 0.72rem;
+  line-height: 1.5;
 }
 
 .font-mono,
 .tabular-nums {
   font-family: 'Cairo', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif !important;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0 !important;
 }
 
 @media print {
   body {
     background: #ffffff !important;
     color: #0f172a !important;
+    overflow: visible !important;
   }
   .no-print {
     display: none !important;
@@ -40,5 +68,33 @@
   .print-break-inside-avoid {
     break-inside: avoid;
   }
+  body.printing-modal-active > #root > div > aside,
+  body.printing-modal-active > #root > div > div > header,
+  body.printing-modal-active > #root > div > div > nav,
+  body.printing-modal-active .hide-when-modal-printing {
+    display: none !important;
+  }
+  .print-modal-backdrop {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  .print-modal-card {
+    max-width: 100% !important;
+    max-height: none !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+  .print-modal-body {
+    overflow: visible !important;
+    max-height: none !important;
+    padding: 0 !important;
+  }
 }
-
